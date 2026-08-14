@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Dữ liệu do app tự sinh ---
+# SQLite được app tạo lại ở lần chạy đầu (run.bat / `python -m backend refresh all`).
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+
+# --- Cấu hình cục bộ ---
+.claude/settings.local.json
+.env
+
+# --- Hệ điều hành / IDE ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.lnk

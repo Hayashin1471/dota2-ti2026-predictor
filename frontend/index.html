@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TI 2026 Match Predictor</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#127942;</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">TI</div>
+    <div class="brand-text">
+      <h1>The International 2026 <span>Match Predictor</span></h1>
+      <p id="tournament-meta">Đang tải dữ liệu giải đấu…</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <div class="data-pill" id="data-pill" title="Trạng thái dữ liệu local">
+      <span class="dot"></span><span id="data-pill-text">…</span>
+    </div>
+    <button class="btn btn-ghost" id="btn-refresh">Cập nhật dữ liệu</button>
+  </div>
+</header>
+
+<div id="refresh-bar" class="refresh-bar hidden">
+  <div class="refresh-info"><strong id="refresh-phase">…</strong><span id="refresh-msg"></span></div>
+  <div class="progress"><div class="progress-fill" id="refresh-fill"></div></div>
+  <button class="btn btn-tiny" id="btn-cancel">Dừng</button>
+</div>
+
+<main class="stage">
+
+  <!-- ================= DRAFT BOARD ================= -->
+  <section class="board">
+    <!-- Team A -->
+    <div class="side side-a" id="side-a">
+      <div class="side-head">
+        <span class="side-tag">TEAM A · RADIANT</span>
+        <span class="side-rating" id="rating-a">—</span>
+      </div>
+      <div class="team-select" data-side="a">
+        <button class="team-button" id="team-btn-a" type="button">
+          <img class="team-logo" id="team-logo-a" alt="" hidden>
+          <span class="team-name" id="team-name-a">Chọn team A</span>
+          <svg class="chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div class="team-menu" id="team-menu-a" hidden></div>
+      </div>
+      <div class="team-meta" id="team-meta-a"></div>
+      <div class="picks" id="picks-a"></div>
+    </div>
+
+    <!-- Center -->
+    <div class="center">
+      <div class="vs-badge">VS</div>
+      <button class="btn btn-primary btn-predict" id="btn-predict" disabled>
+        <span>DỰ ĐOÁN</span>
+      </button>
+      <div class="line-control">
+        <label for="line-input">Mốc Over/Under</label>
+        <div class="line-input-wrap">
+          <input id="line-input" type="number" min="15" max="80" step="0.5" value="41">
+          <span>phút</span>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-tiny" id="btn-clear">Xoá lựa chọn</button>
+    </div>
+
+    <!-- Team B -->
+    <div class="side side-b" id="side-b">
+      <div class="side-head">
+        <span class="side-rating" id="rating-b">—</span>
+        <span class="side-tag">TEAM B · DIRE</span>
+      </div>
+      <div class="team-select" data-side="b">
+        <button class="team-button" id="team-btn-b" type="button">
+          <img class="team-logo" id="team-logo-b" alt="" hidden>
+          <span class="team-name" id="team-name-b">Chọn team B</span>
+          <svg class="chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div class="team-menu" id="team-menu-b" hidden></div>
+      </div>
+      <div class="team-meta" id="team-meta-b"></div>
+      <div class="picks" id="picks-b"></div>
+    </div>
+  </section>
+
+  <!-- ================= RESULT ================= -->
+  <section class="result hidden" id="result">
+    <div class="result-grid">
+
+      <article class="card card-win">
+        <header class="card-head">
+          <h2>Dự đoán thắng thua</h2>
+          <span class="chip" id="confidence-chip">—</span>
+        </header>
+        <div class="winbar">
+          <div class="winbar-fill a" id="win-fill-a"></div>
+          <div class="winbar-fill b" id="win-fill-b"></div>
+        </div>
+        <div class="winbar-labels">
+          <div class="wl a"><span class="pct" id="win-pct-a">—</span><span class="nm" id="win-name-a">—</span></div>
+          <div class="wl b"><span class="nm" id="win-name-b">—</span><span class="pct" id="win-pct-b">—</span></div>
+        </div>
+        <p class="verdict" id="verdict">—</p>
+      </article>
+
+      <article class="card card-ou">
+        <header class="card-head">
+          <h2>Thời lượng trận</h2>
+          <span class="chip chip-line" id="ou-line">O/U 41′</span>
+        </header>
+        <div class="ou-main">
+          <div class="ou-expected">
+            <span class="ou-value" id="ou-expected">—</span>
+            <span class="ou-unit">phút (dự kiến)</span>
+          </div>
+          <div class="ou-pick" id="ou-pick">—</div>
+        </div>
+        <div class="ou-bar">
+          <div class="ou-fill under" id="ou-fill-under"></div>
+          <div class="ou-marker" id="ou-marker"><span id="ou-marker-label">41′</span></div>
+        </div>
+        <div class="ou-legend">
+          <span class="under">UNDER <b id="ou-under">—</b></span>
+          <span class="over">OVER <b id="ou-over">—</b></span>
+        </div>
+        <p class="muted small" id="ou-note"></p>
+      </article>
+
+      <article class="card card-factors">
+        <header class="card-head"><h2>Các yếu tố tác động</h2></header>
+        <div id="factors"></div>
+      </article>
+
+      <article class="card card-h2h">
+        <header class="card-head"><h2>Đối đầu &amp; phong độ</h2></header>
+        <div id="h2h"></div>
+      </article>
+
+      <article class="card card-lineup">
+        <header class="card-head">
+          <h2>Tuyển thủ với hero</h2>
+          <span class="chip chip-line" id="lineup-total">—</span>
+        </header>
+        <div id="lineup"></div>
+      </article>
+
+    </div>
+    <div class="notes" id="notes"></div>
+  </section>
+
+  <!-- ================= HISTORY ================= -->
+  <section class="history">
+    <header class="section-head">
+      <h2>Lịch sử kết quả</h2>
+      <div class="tabs" id="history-tabs">
+        <button class="tab on" data-scope="ti" type="button">TI 2026</button>
+        <button class="tab" data-scope="teams" type="button">2 đội đang chọn</button>
+        <button class="tab" data-scope="all" type="button">Tất cả giải</button>
+      </div>
+    </header>
+    <div id="history-body" class="history-body">
+      <p class="muted small">Đang tải…</p>
+    </div>
+  </section>
+
+  <!-- ================= SCHEDULE ================= -->
+  <section class="schedule">
+    <header class="section-head">
+      <h2>Lịch thi đấu TI 2026</h2>
+      <span class="muted small">Nguồn: GosuGamers · bấm vào trận để nạp nhanh 2 team</span>
+    </header>
+    <div class="schedule-strip" id="schedule-strip"></div>
+  </section>
+
+  <footer class="foot">
+    <span>Dữ liệu: <a href="https://liquipedia.net/dota2/The_International/2026" target="_blank" rel="noopener">Liquipedia</a> ·
+    <a href="https://www.gosugamers.net/dota2" target="_blank" rel="noopener">GosuGamers</a> ·
+    <a href="https://www.opendota.com" target="_blank" rel="noopener">OpenDota</a></span>
+    <span class="muted small">Công cụ thống kê tham khảo — không phải lời khuyên cá cược.</span>
+  </footer>
+</main>
+
+<!-- ================= HERO PICKER ================= -->
+<div class="modal hidden" id="hero-modal">
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-panel">
+    <header class="modal-head">
+      <div>
+        <h3 id="hero-modal-title">Chọn hero</h3>
+        <p class="muted small" id="hero-modal-sub"></p>
+      </div>
+      <button class="icon-btn" data-close aria-label="Đóng">×</button>
+    </header>
+    <div class="modal-tools">
+      <input type="search" id="hero-search" placeholder="Tìm hero…" autocomplete="off">
+      <div class="attr-tabs" id="attr-tabs">
+        <button class="attr on" data-attr="*">Tất cả</button>
+        <button class="attr" data-attr="str">STR</button>
+        <button class="attr" data-attr="agi">AGI</button>
+        <button class="attr" data-attr="int">INT</button>
+        <button class="attr" data-attr="all">UNI</button>
+      </div>
+    </div>
+    <div class="hero-grid" id="hero-grid"></div>
+  </div>
+</div>
+
+<!-- ================= PLAYER PICKER ================= -->
+<div class="modal hidden" id="player-modal">
+  <div class="modal-backdrop" data-close-player></div>
+  <div class="modal-panel modal-narrow">
+    <header class="modal-head">
+      <div>
+        <h3 id="player-modal-title">Chọn tuyển thủ</h3>
+        <p class="muted small" id="player-modal-sub"></p>
+      </div>
+      <button class="icon-btn" data-close-player aria-label="Đóng">×</button>
+    </header>
+    <div class="player-list" id="player-list"></div>
+  </div>
+</div>
+
+<div class="toast hidden" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
