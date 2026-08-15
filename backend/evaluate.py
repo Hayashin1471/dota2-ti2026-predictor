@@ -169,11 +169,13 @@ def _shrink(estimate: float, toward: float, n: int, prior: int) -> float:
     return toward + (estimate - toward) * n / (n + prior)
 
 
-def fit_ti_context(ti_rows: list[dict], w: dict, bias: float) -> dict:
-    """Fit the two TI corrections on the TI matches played so far.
+def fit_ti_context(ti_rows: list[dict], w: dict, bias: float,
+                   validate: bool = True) -> dict:
+    """Fit the TI corrections on the TI matches played so far, and gate them.
 
-    Each is one free parameter with an obvious null value, which is why sixty
-    games is enough for them and nowhere near enough for the three term weights.
+    Each is one free parameter with an obvious null value, which is why a
+    hundred games is enough for them and nowhere near enough for the three term
+    weights.
 
     * `hero_mult` scales the hero-win-rate term.  Searched on a coarse grid
       rather than by gradient: the likelihood in one dimension is smooth and
@@ -182,13 +184,29 @@ def fit_ti_context(ti_rows: list[dict], w: dict, bias: float) -> dict:
       alongside it so neither absorbs the other's error.
     * `duration_shift` is the mean log-duration residual left over after the
       baseline, the team pace and the draft have had their say.
+
+    **Fitting them is not enough to ship them.**  Shrinkage keeps the numbers
+    modest but cannot tell a real effect from a lucky one, and the first version
+    of this function shipped whatever it fitted: after two days of TI it had
+    learned `hero_mult = 0.50` from what turned out to be noise, and that
+    correction then made day three's predictions worse than leaving the model
+    alone.  So the corrections now have to earn their place on games they were
+    not fitted on - fit on the first half of TI, score the second half, keep
+    only what beats doing nothing.  The two halves of the model are gated
+    separately because they answer different questions: the draft multipliers on
+    win-probability log-loss, the duration shift on over/under Brier.
     """
     n = len(ti_rows)
     out = {"games": n, "hero_mult": 1.0, "matchup_mult": 1.0,
            "duration_shift": 0.0, "fitted_at": time.time()}
-    if n < config.TI_CONTEXT_MIN_GAMES:
-        out["note"] = (f"only {n} TI matches with drafts - need "
-                       f"{config.TI_CONTEXT_MIN_GAMES} before correcting anything")
+    # Validation needs two halves that each clear the minimum, so the threshold
+    # to correct anything at all is twice TI_CONTEXT_MIN_GAMES.  An unvalidated
+    # correction is exactly the thing that went wrong, so "too early to check"
+    # means "too early to apply".
+    need = config.TI_CONTEXT_MIN_GAMES * (2 if validate else 1)
+    if n < need:
+        out["note"] = (f"only {n} TI matches with drafts - need {need} before "
+                       f"correcting anything")
         return out
 
     # --- draft multipliers ------------------------------------------------
@@ -232,6 +250,54 @@ def fit_ti_context(ti_rows: list[dict], w: dict, bias: float) -> dict:
         "nll_uncorrected": round(nll(1.0, 1.0), 4),
         "median_minutes": round(math.exp(mu_default + mean_resid) / 60, 1),
     }
+
+    if validate:
+        out.update(_validate_context(ti_rows, w, bias, out))
+    return out
+
+
+def _validate_context(ti_rows: list[dict], w: dict, bias: float,
+                      fitted: dict) -> dict:
+    """Refit on the older half of TI, score the newer half, keep what wins.
+
+    Returns the fields to overwrite on the fitted context: whichever half of the
+    correction failed is reset to its neutral value, and the numbers behind the
+    decision are kept so `evaluate` can print them.
+    """
+    half = len(ti_rows) // 2
+    early, late = ti_rows[:half], ti_rows[half:]
+    trial = fit_ti_context(early, w, bias, validate=False)
+
+    plain = score(late, w, bias)
+    fixed = score(late, w, bias, context=trial)
+    draft_ok = fixed["log_loss"] <= plain["log_loss"]
+    dur_ok = fixed["over_under"]["brier"] <= plain["over_under"]["brier"]
+
+    out: dict = {
+        "validation": {
+            "fitted_on": len(early),
+            "scored_on": len(late),
+            "boundary": time.strftime("%Y-%m-%d %H:%M",
+                                      time.localtime(late[0]["start_time"])),
+            "trial_context": {k: trial[k] for k in
+                              ("hero_mult", "matchup_mult", "duration_shift")},
+            "log_loss": {"without": plain["log_loss"], "with": fixed["log_loss"],
+                         "kept": draft_ok},
+            "over_under_brier": {"without": plain["over_under"]["brier"],
+                                 "with": fixed["over_under"]["brier"],
+                                 "kept": dur_ok},
+        },
+    }
+    if not draft_ok:
+        out["hero_mult"] = 1.0
+        out["matchup_mult"] = 1.0
+    if not dur_ok:
+        out["duration_shift"] = 0.0
+
+    kept = [name for name, ok in (("draft", draft_ok), ("duration", dur_ok)) if ok]
+    out["note"] = ("kept: " + ", ".join(kept)) if kept else \
+        ("no correction survived out-of-sample validation - the model runs "
+         "exactly as it would without any TI adjustment")
     return out
 
 
@@ -375,7 +441,7 @@ def run(test_fraction: float = 0.25, apply: bool = False,
                           "note": "measured; fitted on the training slice only"},
         "config_weights": {"team": config.W_TEAM, "hero": config.W_HERO_WINRATE,
                            "matchup": config.W_MATCHUP},
-        "ti_context": {**context_full, "note": "stored; the TI-only corrections"},
+        "ti_context": context_full,
         "train_score": score(train, w, bias),
         "test_score": score(test, w, bias),
         "test_score_with_config_weights": score(test, baseline_w, 0.0),
@@ -395,27 +461,9 @@ def run(test_fraction: float = 0.25, apply: bool = False,
                     "as an upper bound until more TI games are played.",
         }
 
-        # The honest version of the same question: fit the corrections on the
-        # first half of TI and score the second half, which they never saw.
-        # This is what tells you whether the effect is real or is the sixty
-        # games telling you about themselves.
-        half = len(ti_rows) // 2
-        early, late = ti_rows[:half], ti_rows[half:]
-        if len(early) >= config.TI_CONTEXT_MIN_GAMES and late:
-            early_ctx = fit_ti_context(early, w, bias)
-            result["ti_context_holdout"] = {
-                "fitted_on": len(early),
-                "scored_on": len(late),
-                "boundary": time.strftime("%Y-%m-%d %H:%M",
-                                          time.localtime(late[0]["start_time"])),
-                "context_from_first_half": {
-                    "hero_mult": early_ctx["hero_mult"],
-                    "matchup_mult": early_ctx["matchup_mult"],
-                    "duration_shift": early_ctx["duration_shift"],
-                },
-                "without_context": score(late, w, bias),
-                "with_context": score(late, w, bias, context=early_ctx),
-            }
+        # The gate that decided whether any of this ships, reported verbatim.
+        if context.get("validation"):
+            result["ti_context_holdout"] = context["validation"]
 
     # a named slice scored as a held-out sample (never trained on)
     if today_only_start:

@@ -89,14 +89,22 @@ DURATION_PRIOR_GAMES = 120
 DEFAULT_DRAFT_SAMPLE = 600   # pro matches to pull picks/duration for by default
 
 # --- Tournament context ---------------------------------------------------
-# A TI game is not an average pro game.  Both sides are elite, so a hero's
-# public win rate says far less about who wins the draft, and the games run
-# noticeably longer.  Two corrections are fitted on the TI matches that have
-# already been played (`python -m backend evaluate --apply`) and shrunk toward
-# "no correction" by a pseudo-count, so a two-day sample only nudges the model
-# while a full tournament moves it properly.
+# A TI game might not be an average pro game: both sides are elite, so a hero's
+# public win rate may say less about who wins the draft, and the games may run
+# longer.  Corrections for that are fitted on the TI matches already played
+# (`python -m backend evaluate --apply`), shrunk toward "no correction" by a
+# pseudo-count, and then - the part that matters - only applied if they beat
+# doing nothing on TI games they were not fitted on.
+#
+# They usually do not.  After TI 2026 day 1-2 the fit said "damp the hero term
+# to 0.50"; day 3 then said the opposite, and the correction had made day 3
+# worse.  Shrinkage alone could not catch that, which is why the out-of-sample
+# gate in `evaluate.fit_ti_context` exists.
 TI_LEAGUE_NAME = "The International 2026"
-TI_CONTEXT_MIN_GAMES = 20     # below this many TI games, no correction at all
+# Below this, one half of the validation split is too thin to mean anything.
+# The effective threshold to change anything is twice this, since the check
+# needs an older half to fit on and a newer half to score on.
+TI_CONTEXT_MIN_GAMES = 20
 TI_DRAFT_PRIOR_GAMES = 60     # pseudo-games pulling the draft multipliers to 1
 TI_DURATION_PRIOR_GAMES = 30  # pseudo-games pulling the duration shift to 0
 TI_MULT_FLOOR = 0.0           # a multiplier below 0 would invert the term

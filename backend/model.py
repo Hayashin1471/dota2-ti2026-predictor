@@ -520,15 +520,24 @@ def ti_context() -> dict:
     games = int(ctx.get("games", 0))
     # Re-check the threshold on read, not just on write: raising
     # TI_CONTEXT_MIN_GAMES should switch an already-stored correction back off.
-    active = games >= config.TI_CONTEXT_MIN_GAMES
+    enough = games >= config.TI_CONTEXT_MIN_GAMES * 2
+    hero = float(ctx.get("hero_mult", 1.0)) if enough else 1.0
+    matchup = float(ctx.get("matchup_mult", 1.0)) if enough else 1.0
+    shift = float(ctx.get("duration_shift", 0.0)) if enough else 0.0
     return {
-        "hero_mult": float(ctx.get("hero_mult", 1.0)) if active else 1.0,
-        "matchup_mult": float(ctx.get("matchup_mult", 1.0)) if active else 1.0,
-        "duration_shift": float(ctx.get("duration_shift", 0.0)) if active else 0.0,
+        "hero_mult": hero,
+        "matchup_mult": matchup,
+        "duration_shift": shift,
         "games": games,
         "fitted_at": ctx.get("fitted_at"),
         "raw": ctx.get("raw"),
-        "active": active,
+        "validation": ctx.get("validation"),
+        "note": ctx.get("note"),
+        # "active" means something is actually being changed, not merely that a
+        # context row exists: `fit_ti_context` neutralises whichever half failed
+        # its out-of-sample check, and a neutralised context must not announce
+        # itself in the UI as if it were doing something.
+        "active": hero != 1.0 or matchup != 1.0 or shift != 0.0,
     }
 
 
