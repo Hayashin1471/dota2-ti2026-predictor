@@ -55,6 +55,7 @@ def api_status():
             "gosugamers": db.get_meta("gosugamers_updated"),
         },
         "weights": model.weights(),
+        "ti_context": model.ti_context(),
         **ingest.status(),
     }
 

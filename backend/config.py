@@ -88,6 +88,21 @@ DURATION_PRIOR_GAMES = 120
 
 DEFAULT_DRAFT_SAMPLE = 600   # pro matches to pull picks/duration for by default
 
+# --- Tournament context ---------------------------------------------------
+# A TI game is not an average pro game.  Both sides are elite, so a hero's
+# public win rate says far less about who wins the draft, and the games run
+# noticeably longer.  Two corrections are fitted on the TI matches that have
+# already been played (`python -m backend evaluate --apply`) and shrunk toward
+# "no correction" by a pseudo-count, so a two-day sample only nudges the model
+# while a full tournament moves it properly.
+TI_LEAGUE_NAME = "The International 2026"
+TI_CONTEXT_MIN_GAMES = 20     # below this many TI games, no correction at all
+TI_DRAFT_PRIOR_GAMES = 60     # pseudo-games pulling the draft multipliers to 1
+TI_DURATION_PRIOR_GAMES = 30  # pseudo-games pulling the duration shift to 0
+TI_MULT_FLOOR = 0.0           # a multiplier below 0 would invert the term
+TI_MULT_CEIL = 1.5
+TI_DURATION_SHIFT_CAP = 0.25  # +/- ~28% on predicted match length
+
 # How many calendar days of finished series to pull from hawk.live per refresh.
 # Dated pages never change, so they cache for a week and re-runs are cheap.
 RESULTS_DAYS = 14

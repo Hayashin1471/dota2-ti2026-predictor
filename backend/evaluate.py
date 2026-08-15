@@ -5,9 +5,14 @@ What this can and cannot do:
 * **Can** fit `W_TEAM / W_HERO_WINRATE / W_MATCHUP` by maximising log-likelihood
   over every stored pro match that has a draft, and report out-of-sample
   accuracy on a later time slice.  That is a real fit on ~1500 matches.
-* **Cannot** learn anything useful from a single day of TI.  Eighteen games
-  cannot identify three weights; asking them to would just fit noise.  Today's
-  games are therefore *scored* as a held-out sample, not trained on.
+* **Cannot** identify those three weights from a couple of days of TI.  Sixty
+  games cannot pin down three free parameters; asking them to would just fit
+  noise.  So TI games are *not* what the weights are fitted on.
+* **Can**, however, fit *two* things from those sixty games, because each is a
+  single number with a strong prior sitting on it: how much the hero-win-rate
+  term is worth at TI (`hero_mult`) and how much longer TI games run
+  (`duration_shift`).  Both are shrunk toward "no correction" by a pseudo-count,
+  so two days nudge and a full tournament decides.  See `fit_ti_context`.
 
 Leakage: the team-strength feature uses `matches.pre_elo_*`, the rating each
 side carried *into* that game, so it never sees the result.  The hero win-rate
@@ -107,8 +112,11 @@ def build_dataset(min_start: float | None = None, max_start: float | None = None
 FEATURES = ("x_team", "x_hero", "x_matchup")
 
 
-def _predict_logit(row: dict, w: dict, bias: float) -> float:
-    return bias + sum(w[f] * row[f] for f in FEATURES)
+def _predict_logit(row: dict, w: dict, bias: float, context: dict | None = None) -> float:
+    mult = {"x_team": 1.0,
+            "x_hero": (context or {}).get("hero_mult", 1.0),
+            "x_matchup": (context or {}).get("matchup_mult", 1.0)}
+    return bias + sum(w[f] * row[f] * mult[f] for f in FEATURES)
 
 
 def fit_weights(rows: list[dict], l2: float = 2.0, iterations: int = 800,
@@ -149,11 +157,95 @@ def fit_weights(rows: list[dict], l2: float = 2.0, iterations: int = 800,
 
 
 # --------------------------------------------------------------------------
+# tournament context: what the TI games played so far say about TI games
+# --------------------------------------------------------------------------
+def is_ti(row: dict) -> bool:
+    # exactly the main event; the qualifiers carry a " - Regional Qualifier X" suffix
+    return (row["league"] or "").strip() == config.TI_LEAGUE_NAME
+
+
+def _shrink(estimate: float, toward: float, n: int, prior: int) -> float:
+    """Pull an estimate back toward a default in proportion to how thin it is."""
+    return toward + (estimate - toward) * n / (n + prior)
+
+
+def fit_ti_context(ti_rows: list[dict], w: dict, bias: float) -> dict:
+    """Fit the two TI corrections on the TI matches played so far.
+
+    Each is one free parameter with an obvious null value, which is why sixty
+    games is enough for them and nowhere near enough for the three term weights.
+
+    * `hero_mult` scales the hero-win-rate term.  Searched on a coarse grid
+      rather than by gradient: the likelihood in one dimension is smooth and
+      cheap, and a grid cannot run away to a silly value.
+    * `matchup_mult` does the same for the hero-vs-hero term, and is fitted
+      alongside it so neither absorbs the other's error.
+    * `duration_shift` is the mean log-duration residual left over after the
+      baseline, the team pace and the draft have had their say.
+    """
+    n = len(ti_rows)
+    out = {"games": n, "hero_mult": 1.0, "matchup_mult": 1.0,
+           "duration_shift": 0.0, "fitted_at": time.time()}
+    if n < config.TI_CONTEXT_MIN_GAMES:
+        out["note"] = (f"only {n} TI matches with drafts - need "
+                       f"{config.TI_CONTEXT_MIN_GAMES} before correcting anything")
+        return out
+
+    # --- draft multipliers ------------------------------------------------
+    grid = [i / 20 for i in range(0, 31)]        # 0.00 .. 1.50
+
+    def nll(mh: float, mm: float) -> float:
+        t = 0.0
+        for r in ti_rows:
+            z = (bias + w["x_team"] * r["x_team"]
+                 + mh * w["x_hero"] * r["x_hero"]
+                 + mm * w["x_matchup"] * r["x_matchup"])
+            p = min(max(model.sigmoid(z), 1e-6), 1 - 1e-6)
+            t += r["y"] * math.log(p) + (1 - r["y"]) * math.log(1 - p)
+        return -t / len(ti_rows)
+
+    best = min(((nll(a, b), a, b) for a in grid for b in grid))
+    raw_hero, raw_matchup = best[1], best[2]
+
+    def clamp(x: float) -> float:
+        return max(config.TI_MULT_FLOOR, min(config.TI_MULT_CEIL, x))
+
+    out["hero_mult"] = round(clamp(_shrink(raw_hero, 1.0, n, config.TI_DRAFT_PRIOR_GAMES)), 4)
+    out["matchup_mult"] = round(clamp(_shrink(raw_matchup, 1.0, n, config.TI_DRAFT_PRIOR_GAMES)), 4)
+
+    # --- duration offset ---------------------------------------------------
+    base = model.duration_baseline()
+    mu_default = base["mu"] + model.draft_sample_stats()["shift"]
+    resid = [math.log(r["duration"]) - (mu_default + r["ln_len_shift"]) for r in ti_rows]
+    mean_resid = sum(resid) / n
+    sd = math.sqrt(sum((x - mean_resid) ** 2 for x in resid) / max(1, n - 1))
+    shift = _shrink(mean_resid, 0.0, n, config.TI_DURATION_PRIOR_GAMES)
+    out["duration_shift"] = round(max(-config.TI_DURATION_SHIFT_CAP,
+                                      min(config.TI_DURATION_SHIFT_CAP, shift)), 4)
+
+    out["raw"] = {
+        "hero_mult": raw_hero,
+        "matchup_mult": raw_matchup,
+        "duration_resid": round(mean_resid, 4),
+        "duration_resid_se": round(sd / math.sqrt(n), 4),
+        "nll_at_fit": round(best[0], 4),
+        "nll_uncorrected": round(nll(1.0, 1.0), 4),
+        "median_minutes": round(math.exp(mu_default + mean_resid) / 60, 1),
+    }
+    return out
+
+
+# --------------------------------------------------------------------------
 # scoring
 # --------------------------------------------------------------------------
 def score(rows: list[dict], w: dict, bias: float = 0.0,
-          line_minutes: float = config.OVER_UNDER_LINE_MIN) -> dict:
-    """Win-probability and over/under metrics for a set of matches."""
+          line_minutes: float = config.OVER_UNDER_LINE_MIN,
+          context: dict | None = None) -> dict:
+    """Win-probability and over/under metrics for a set of matches.
+
+    `context` applies the TI corrections, and only to the rows that are TI
+    matches, so a mixed set is scored the same way the app would score it.
+    """
     if not rows:
         return {"n": 0}
 
@@ -170,7 +262,8 @@ def score(rows: list[dict], w: dict, bias: float = 0.0,
     actual_over = 0
 
     for r in rows:
-        p = model.sigmoid(_predict_logit(r, w, bias))
+        ctx = context if (context and is_ti(r)) else None
+        p = model.sigmoid(_predict_logit(r, w, bias, ctx))
         p = min(max(p, 1e-6), 1 - 1e-6)
         y = r["y"]
         ll += y * math.log(p) + (1 - y) * math.log(1 - p)
@@ -180,6 +273,8 @@ def score(rows: list[dict], w: dict, bias: float = 0.0,
         # duration side: baseline shifted by this match's draft and team pace,
         # exactly as `model.predict` does it
         mu = mu_default + r.get("ln_len_shift", 0.0)
+        if ctx:
+            mu += ctx.get("duration_shift", 0.0)
         p_over = 1.0 - model._norm_cdf((math.log(line_sec) - mu) / sigma)
         over = 1.0 if r["duration"] > line_sec else 0.0
         actual_over += over
@@ -231,7 +326,14 @@ def calibration(rows: list[dict], w: dict, bias: float = 0.0, buckets: int = 5) 
 def run(test_fraction: float = 0.25, apply: bool = False,
         today_only_start: float | None = None,
         holdout_label: str = "recent") -> dict:
-    """Fit on the earlier matches, score on the later ones and on a holdout."""
+    """Fit, measure honestly on a later time slice, then refit on everything.
+
+    Two fits happen here and they answer different questions.  The *split* fit
+    (old 75% -> new 25%) is the measurement: it is the only number that says
+    whether the model generalises.  The *full* fit is what actually gets stored,
+    because throwing away the newest quarter of the data - the quarter closest
+    to the games being predicted - would be leaving information on the table.
+    """
     rows = build_dataset()
     if len(rows) < 200:
         return {"error": f"only {len(rows)} matches with full drafts - run "
@@ -240,36 +342,85 @@ def run(test_fraction: float = 0.25, apply: bool = False,
     split = int(len(rows) * (1 - test_fraction))
     train, test = rows[:split], rows[split:]
 
-    w, bias = fit_weights(train)
+    w, bias = fit_weights(train)                    # measured
+    w_full, bias_full = fit_weights(rows)           # stored
 
     baseline_w = {"x_team": config.W_TEAM, "x_hero": config.W_HERO_WINRATE,
                   "x_matchup": config.W_MATCHUP}
+
+    ti_rows = [r for r in rows if is_ti(r)]
+    # The corrections are fitted with the split weights, so the numbers reported
+    # for them are not scored by a model that has already seen the test slice.
+    context = fit_ti_context(ti_rows, w, bias)
+    context_full = fit_ti_context(ti_rows, w_full, bias_full)
 
     result = {
         "dataset": {
             "matches": len(rows),
             "train": len(train),
             "test": len(test),
+            "ti_matches": len(ti_rows),
             "from": time.strftime("%Y-%m-%d", time.localtime(rows[0]["start_time"])),
             "to": time.strftime("%Y-%m-%d", time.localtime(rows[-1]["start_time"])),
         },
-        "fitted_weights": {"team": round(w["x_team"], 4),
-                           "hero": round(w["x_hero"], 4),
-                           "matchup": round(w["x_matchup"], 4),
-                           "radiant_bias": round(bias, 4)},
+        "fitted_weights": {"team": round(w_full["x_team"], 4),
+                           "hero": round(w_full["x_hero"], 4),
+                           "matchup": round(w_full["x_matchup"], 4),
+                           "radiant_bias": round(bias_full, 4),
+                           "note": "stored; fitted on all matches"},
+        "split_weights": {"team": round(w["x_team"], 4),
+                          "hero": round(w["x_hero"], 4),
+                          "matchup": round(w["x_matchup"], 4),
+                          "radiant_bias": round(bias, 4),
+                          "note": "measured; fitted on the training slice only"},
         "config_weights": {"team": config.W_TEAM, "hero": config.W_HERO_WINRATE,
                            "matchup": config.W_MATCHUP},
+        "ti_context": {**context_full, "note": "stored; the TI-only corrections"},
         "train_score": score(train, w, bias),
         "test_score": score(test, w, bias),
         "test_score_with_config_weights": score(test, baseline_w, 0.0),
         "calibration_test": calibration(test, w, bias),
     }
 
+    # --- what the TI corrections are worth, on the TI games themselves -----
+    if ti_rows:
+        result["ti_context_effect"] = {
+            "matches": len(ti_rows),
+            "without_context": score(ti_rows, w, bias),
+            "with_context": score(ti_rows, w, bias, context=context),
+            "non_ti_unaffected": True,
+            "note": "In-sample for the two corrections: they were fitted on "
+                    "these very games.  The shrinkage in `fit_ti_context` is "
+                    "what keeps that from becoming an overfit; treat the gain "
+                    "as an upper bound until more TI games are played.",
+        }
+
+        # The honest version of the same question: fit the corrections on the
+        # first half of TI and score the second half, which they never saw.
+        # This is what tells you whether the effect is real or is the sixty
+        # games telling you about themselves.
+        half = len(ti_rows) // 2
+        early, late = ti_rows[:half], ti_rows[half:]
+        if len(early) >= config.TI_CONTEXT_MIN_GAMES and late:
+            early_ctx = fit_ti_context(early, w, bias)
+            result["ti_context_holdout"] = {
+                "fitted_on": len(early),
+                "scored_on": len(late),
+                "boundary": time.strftime("%Y-%m-%d %H:%M",
+                                          time.localtime(late[0]["start_time"])),
+                "context_from_first_half": {
+                    "hero_mult": early_ctx["hero_mult"],
+                    "matchup_mult": early_ctx["matchup_mult"],
+                    "duration_shift": early_ctx["duration_shift"],
+                },
+                "without_context": score(late, w, bias),
+                "with_context": score(late, w, bias, context=early_ctx),
+            }
+
     # a named slice scored as a held-out sample (never trained on)
     if today_only_start:
         recent = [r for r in rows if r["start_time"] >= today_only_start]
-        # exactly the main event; the qualifiers carry a " - Regional Qualifier X" suffix
-        ti_recent = [r for r in recent if (r["league"] or "").strip() == "The International 2026"]
+        ti_recent = [r for r in recent if is_ti(r)]
         result["holdout"] = {
             "label": holdout_label,
             "since": time.strftime("%Y-%m-%d %H:%M", time.localtime(today_only_start)),
@@ -293,13 +444,14 @@ def run(test_fraction: float = 0.25, apply: bool = False,
 
     if apply:
         db.set_meta("fitted_weights", {
-            "team": round(w["x_team"], 4),
-            "hero": round(w["x_hero"], 4),
-            "matchup": round(w["x_matchup"], 4),
-            "radiant_bias": round(bias, 4),
+            "team": round(w_full["x_team"], 4),
+            "hero": round(w_full["x_hero"], 4),
+            "matchup": round(w_full["x_matchup"], 4),
+            "radiant_bias": round(bias_full, 4),
             "fitted_at": time.time(),
-            "trained_on": len(train),
+            "trained_on": len(rows),
         })
+        db.set_meta("ti_context", context_full)
         model.invalidate_cache()
         result["applied"] = True
 

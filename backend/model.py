@@ -18,6 +18,12 @@ Three independent signals are combined on the log-odds scale:
 Match length is modelled separately as a lognormal: a global pro-match baseline
 shifted by the two teams' historical pace and by the heroes on the board, then
 integrated past the 41-minute line to price over/under.
+
+On top of both sits a **tournament context** (`ti_context`): two multipliers and
+a duration offset fitted on the TI games already played.  It exists because a TI
+game is not a random pro game - the field is sixteen elite teams drafting from
+the same prepared pool - and because that difference is only measurable once the
+tournament is under way.  See `backend/evaluate.py:fit_ti_context`.
 """
 from __future__ import annotations
 
@@ -503,20 +509,52 @@ def weights() -> dict:
     }
 
 
+def ti_context() -> dict:
+    """Corrections fitted on the TI matches already played, or neutral ones.
+
+    `evaluate.fit_ti_context` writes this after every `--apply` run.  Until TI
+    has enough finished games the multipliers stay at 1 and the shift at 0, so
+    the model behaves exactly as it did before the tournament started.
+    """
+    ctx = db.get_meta("ti_context") or {}
+    games = int(ctx.get("games", 0))
+    # Re-check the threshold on read, not just on write: raising
+    # TI_CONTEXT_MIN_GAMES should switch an already-stored correction back off.
+    active = games >= config.TI_CONTEXT_MIN_GAMES
+    return {
+        "hero_mult": float(ctx.get("hero_mult", 1.0)) if active else 1.0,
+        "matchup_mult": float(ctx.get("matchup_mult", 1.0)) if active else 1.0,
+        "duration_shift": float(ctx.get("duration_shift", 0.0)) if active else 0.0,
+        "games": games,
+        "fitted_at": ctx.get("fitted_at"),
+        "raw": ctx.get("raw"),
+        "active": active,
+    }
+
+
 def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int],
             players_a: list[int | None] | None = None,
             players_b: list[int | None] | None = None,
-            line_minutes: float = config.OVER_UNDER_LINE_MIN) -> dict:
+            line_minutes: float = config.OVER_UNDER_LINE_MIN,
+            ti_mode: bool = True) -> dict:
     """team_a/team_b are rows from ti_teams (dicts with slug, name, team_id).
 
     `players_a`/`players_b` are OpenDota account ids aligned slot-for-slot with
     `heroes_a`/`heroes_b`; a `None` slot simply contributes no player term.
+
+    `ti_mode` applies the corrections fitted on TI games already played.  It
+    defaults to on because every prediction this app is asked for *is* a TI
+    game; the backtest turns it off for non-TI matches.
     """
     table = hero_table()
     sa = team_strength(team_a.get("team_id"))
     sb = team_strength(team_b.get("team_id"))
 
     w = weights()
+    ctx = ti_context()
+    if not ti_mode:
+        ctx = {**ctx, "hero_mult": 1.0, "matchup_mult": 1.0,
+               "duration_shift": 0.0, "active": False}
 
     # --- team strength -----------------------------------------------
     team_logit = w["team"] * (sa["rating"] - sb["rating"]) * LN10_OVER_400
@@ -530,7 +568,11 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
         return sum(logit(table.get(h, {}).get("pub_winrate", 0.5)) for h in ids)
 
     hero_raw = hero_sum(heroes_a) - hero_sum(heroes_b)
-    hero_logit = w["hero"] * hero_raw
+    # At TI both sides draft from the same tiny pool of prepared heroes, so the
+    # public win-rate gap between the two drafts carries much less information
+    # than it does in an average pro game.  `ctx["hero_mult"]` is what the TI
+    # games played so far say about that; it is 1.0 until they say otherwise.
+    hero_logit = w["hero"] * hero_raw * ctx["hero_mult"]
 
     # --- hero vs hero -------------------------------------------------
     matchup_raw = 0.0
@@ -541,7 +583,7 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
             pairs += 1
     if pairs:
         matchup_raw = matchup_raw / pairs * 5.0     # scale to "per hero"
-    matchup_logit = w["matchup"] * matchup_raw
+    matchup_logit = w["matchup"] * matchup_raw * ctx["matchup_mult"]
 
     draft_logit = max(-DRAFT_LOGIT_CAP, min(DRAFT_LOGIT_CAP, hero_logit + matchup_logit))
 
@@ -567,7 +609,10 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
     raw = sum(table.get(h, {}).get("ln_duration_delta", 0.0) for h in picked)
     hero_delta = max(-HERO_DELTA_CAP, min(HERO_DELTA_CAP, raw * HERO_DELTA_GAIN))
 
-    mu = base["mu"] + sample["shift"] + pace + hero_delta
+    # TI games run longer than the pro pool the baseline is drawn from, even
+    # after team pace and the draft are accounted for.  `duration_shift` is the
+    # leftover, measured on the TI games already played.
+    mu = base["mu"] + sample["shift"] + pace + hero_delta + ctx["duration_shift"]
     sigma = max(0.16, base["sigma"] * 0.97)
     line_sec = line_minutes * 60.0
     p_over = 1.0 - _norm_cdf((math.log(line_sec) - mu) / sigma)
@@ -606,6 +651,10 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
                      f"thủ đó trên hero này — phần đó được tính là trung tính.")
     if not assigned and (heroes_a or heroes_b):
         notes.append("Chưa gán tuyển thủ cho hero nào — yếu tố 'tuyển thủ với hero' đang bằng 0.")
+    if ctx["active"]:
+        notes.append(
+            f"Đã hiệu chỉnh theo {ctx['games']} ván TI 2026 đã đấu: trọng số hero ×"
+            f"{ctx['hero_mult']:.2f}, thời lượng {ctx['duration_shift']*100:+.1f}% log.")
 
     return {
         "win_probability": {
@@ -648,6 +697,14 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
                 "meta_shift_log": round(sample["shift"], 4),
                 "team_pace_log": round(pace, 4),
                 "hero_draft_log": round(hero_delta, 4),
+                "ti_context_log": round(ctx["duration_shift"], 4),
+            },
+            "ti_context": {
+                "active": ctx["active"],
+                "games": ctx["games"],
+                "hero_mult": round(ctx["hero_mult"], 3),
+                "matchup_mult": round(ctx["matchup_mult"], 3),
+                "duration_shift": round(ctx["duration_shift"], 4),
             },
         },
         "teams": {

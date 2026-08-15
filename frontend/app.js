@@ -695,9 +695,11 @@ function renderResult(r) {
   $('ou-marker-label').textContent = `${d.line_minutes}′`;
   const win = d.baseline_days ? `${d.baseline_days} ngày gần nhất` : 'toàn bộ lịch sử';
   const t = r.factors.duration_terms;
+  const ctx = r.factors.ti_context || {};
   $('ou-note').textContent =
     `Nền pro ${d.baseline_minutes}′ (${win}, ${d.sample.toLocaleString('vi-VN')} trận) ` +
     `· nhịp độ 2 đội ${pctShift(t.team_pace_log)} · đội hình ${pctShift(t.hero_draft_log)} ` +
+    (ctx.active ? `· TI 2026 (${ctx.games} ván) ${pctShift(t.ti_context_log)} ` : '') +
     `· trung bình kỳ vọng ${d.mean_minutes}′`;
 
   /* --- factors --- */
@@ -706,7 +708,10 @@ function renderResult(r) {
     { label: 'Sức mạnh đội (Elo)', value: f.team_strength.logit,
       hint: `${nameA} ${f.team_strength.a_rating} vs ${nameB} ${f.team_strength.b_rating}` },
     { label: 'Chất lượng hero', value: f.hero_winrate.logit,
-      hint: 'tổng tỉ lệ thắng nền của 5 hero mỗi bên' },
+      hint: ctx.active
+        ? `tổng tỉ lệ thắng nền của 5 hero mỗi bên, đã nhân ×${ctx.hero_mult.toFixed(2)} `
+          + `theo ${ctx.games} ván TI đã đấu`
+        : 'tổng tỉ lệ thắng nền của 5 hero mỗi bên' },
     { label: 'Khắc chế đội hình', value: f.hero_matchups.logit,
       hint: 'đối đầu hero với hero, đã trừ đi sức mạnh nền của từng hero' },
     { label: 'Tuyển thủ với hero', value: f.player_heroes.logit,
