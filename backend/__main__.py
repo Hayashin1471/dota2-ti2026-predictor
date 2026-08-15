@@ -9,6 +9,49 @@ import time
 from . import config, db, ingest
 
 
+def _roster_cmd(args) -> dict:
+    """List, set or clear the manual lineup corrections."""
+    if not args.team:
+        return {"overrides": [dict(r) for r in db.query(
+            "SELECT slug, account_id, is_current, note FROM roster_overrides "
+            "ORDER BY slug, is_current DESC")]}
+
+    if db.one("SELECT 1 FROM ti_teams WHERE slug = ?", (args.team,)) is None:
+        slugs = [r["slug"] for r in db.query("SELECT slug FROM ti_teams ORDER BY slug")]
+        return {"error": f"unknown team '{args.team}'", "known_slugs": slugs}
+
+    if args.clear:
+        db.execute("DELETE FROM roster_overrides WHERE slug = ?", (args.team,))
+        # The flags already written to `players` stay until something rewrites
+        # them, which is what a roster refresh does.
+        return {"team": args.team, "cleared": True,
+                "note": "run `python -m backend refresh players` to pull OpenDota's "
+                        "own view back in"}
+
+    applied, missing = [], []
+    for names, current in ((args.current, True), (args.former, False)):
+        for name in names:
+            p = ingest.resolve_player(args.team, name)
+            if p is None:
+                missing.append(name)
+                continue
+            ingest.set_roster_override(args.team, p["account_id"], current,
+                                       note=f"manual: {'in' if current else 'out'}")
+            applied.append({"name": p["name"], "account_id": p["account_id"],
+                            "is_current": current})
+
+    out = {"team": args.team, "applied": applied}
+    if missing:
+        out["not_found"] = missing
+        out["known_players"] = [r["name"] for r in db.query(
+            "SELECT name FROM players WHERE slug = ? ORDER BY team_games DESC", (args.team,))]
+    out["lineup_now"] = [
+        r["name"] for r in db.query(
+            "SELECT name FROM players WHERE slug = ? AND is_current = 1 "
+            "ORDER BY team_games DESC", (args.team,))]
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="backend", description="TI 2026 predictor")
     sub = parser.add_subparsers(dest="cmd")
@@ -28,6 +71,15 @@ def main() -> None:
 
     sub.add_parser("status", help="show what is in the local database")
     sub.add_parser("compact", help="drop stale HTTP cache rows and shrink the database file")
+
+    ros = sub.add_parser("roster", help="hand-correct a team's active lineup")
+    ros.add_argument("--team", help="ti_teams slug, e.g. lgd-gaming")
+    ros.add_argument("--current", nargs="*", default=[], metavar="NAME",
+                     help="players to force into the active lineup")
+    ros.add_argument("--former", nargs="*", default=[], metavar="NAME",
+                     help="players to force out of the active lineup")
+    ros.add_argument("--clear", action="store_true",
+                     help="drop this team's corrections and go back to OpenDota")
 
     ev = sub.add_parser("evaluate", help="backtest the model and fit its term weights")
     ev.add_argument("--apply", action="store_true",
@@ -66,6 +118,10 @@ def main() -> None:
     if args.cmd == "compact":
         from . import fetcher
         print(json.dumps(fetcher.compact(), indent=2))
+        return
+
+    if args.cmd == "roster":
+        print(json.dumps(_roster_cmd(args), indent=2, ensure_ascii=False))
         return
 
     if args.cmd == "evaluate":

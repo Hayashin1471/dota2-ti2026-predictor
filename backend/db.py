@@ -168,6 +168,22 @@ CREATE TABLE IF NOT EXISTS player_heroes (
     PRIMARY KEY (account_id, hero_id)
 );
 
+-- Manual corrections to `players.is_current`.
+--
+-- OpenDota's "current team member" flag is derived from who has actually been
+-- fielded, so it lags a roster move by days - exactly the days that matter
+-- during a tournament.  A refresh rewrites `players` wholesale, so a hand fix
+-- there would be undone by the next one; these rows are re-applied after every
+-- roster refresh instead.  Managed with `python -m backend roster`.
+CREATE TABLE IF NOT EXISTS roster_overrides (
+    slug       TEXT NOT NULL,        -- ti_teams slug
+    account_id INTEGER NOT NULL,
+    is_current INTEGER NOT NULL,     -- 1 = force into the lineup, 0 = force out
+    note       TEXT,
+    created_at REAL,
+    PRIMARY KEY (slug, account_id)
+);
+
 -- Computed Elo ratings
 CREATE TABLE IF NOT EXISTS elo (
     team_id  INTEGER PRIMARY KEY,

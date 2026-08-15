@@ -318,6 +318,40 @@ def refresh_player_heroes(account_ids: list[int], job: Job | None = None) -> int
     return len(todo)
 
 
+def resolve_player(slug: str, name: str) -> dict | None:
+    """Find one player of a team by nickname, tolerant of case and punctuation."""
+    target = matching.normalize(name)
+    for p in db.query("SELECT account_id, name, is_current FROM players WHERE slug = ?", (slug,)):
+        if matching.normalize(p["name"] or "") == target:
+            return dict(p)
+    return None
+
+
+def set_roster_override(slug: str, account_id: int, is_current: bool,
+                        note: str | None = None) -> None:
+    db.execute(
+        "INSERT INTO roster_overrides(slug,account_id,is_current,note,created_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(slug,account_id) DO UPDATE SET "
+        "is_current=excluded.is_current, note=excluded.note, created_at=excluded.created_at",
+        (slug, account_id, 1 if is_current else 0, note, time.time()))
+    apply_roster_overrides()
+
+
+def apply_roster_overrides() -> int:
+    """Re-assert the manual `is_current` fixes over whatever OpenDota just said.
+
+    Called at the end of every roster refresh, so a correction entered once
+    survives the refreshes that happen daily during the tournament.
+    """
+    rows = db.query("SELECT slug, account_id, is_current FROM roster_overrides")
+    for r in rows:
+        db.execute("UPDATE players SET is_current = ? WHERE account_id = ? AND slug = ?",
+                   (r["is_current"], r["account_id"], r["slug"]))
+    if rows:
+        model.invalidate_cache()
+    return len(rows)
+
+
 def refresh_players(job: Job = JOB) -> dict:
     """Pull each TI team's roster and every listed player's hero record."""
     job.start("players")
@@ -387,11 +421,17 @@ def refresh_players(job: Job = JOB) -> dict:
         except Exception as exc:                                   # noqa: BLE001
             job.error(f"player {aid}: {exc}")
 
+    # OpenDota has just overwritten `is_current` for everyone; put the manual
+    # roster corrections back on top of it.
+    overrides = apply_roster_overrides()
+
     db.set_meta("players_updated", time.time())
     model.invalidate_cache()
     covered = (db.one("SELECT COUNT(DISTINCT account_id) c FROM player_heroes") or {"c": 0})["c"]
-    job.finish(f"players: {len(roster)} tuyển thủ, +{done} bảng hero mới, tổng {covered} người có dữ liệu")
-    return {"players": len(roster), "fetched": done, "covered": covered}
+    job.finish(f"players: {len(roster)} tuyển thủ, +{done} bảng hero mới, tổng {covered} người có "
+               f"dữ liệu" + (f", {overrides} chỉnh tay được giữ lại" if overrides else ""))
+    return {"players": len(roster), "fetched": done, "covered": covered,
+            "overrides_applied": overrides}
 
 
 # --------------------------------------------------------------------------

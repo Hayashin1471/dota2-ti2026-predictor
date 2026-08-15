@@ -121,9 +121,13 @@ gửi User-Agent mô tả rõ, dùng gzip theo yêu cầu của Liquipedia, và 
 Bốn tín hiệu được cộng trên thang **log-odds**:
 
 ```
-logit(P_A) = W_team · (R_A − R_B)·ln10/400  +  W_hero · Σ Δlogit(winrate)  +  W_matchup · Δ khắc chế
+logit(P_A) = W_team · (R_A − R_B)·ln10/400  +  m_hero · W_hero · Σ Δlogit(winrate)
+             +  m_matchup · W_matchup · Δ khắc chế
              +  W_player · Σ Δlogit(winrate của tuyển thủ trên hero được gán)
 ```
+
+`m_hero` / `m_matchup` là **hiệu chỉnh theo giải**, học từ chính các ván TI 2026 đã đấu — xem mục
+4.3. Trước khi giải khởi tranh cả hai bằng 1, tức công thức trở về đúng dạng cũ.
 
 1. **Sức mạnh đội (Elo)** — chạy Elo trên toàn bộ trận pro của 16 đội trong ~21 tháng gần nhất
    (`ELO_HISTORY_DAYS`). Trận càng cũ hệ số K càng nhỏ (half-life 300 ngày); 10 trận đầu của một đội
@@ -155,6 +159,7 @@ Thời lượng trận được mô hình hoá **lognormal**:
 
 ```
 μ = μ_nền(120 ngày gần nhất)  +  dịch chuyển meta  +  nhịp độ 2 đội  +  ảnh hưởng đội hình
+    +  Δ_TI
 P(over) = 1 − Φ( (ln(41·60) − μ) / σ )
 ```
 
@@ -164,8 +169,75 @@ P(over) = 1 − Φ( (ln(41·60) − μ) / σ )
 - **Nhịp độ đội** đo trong cùng cửa sổ với mặt bằng chung, nên độ trôi theo patch không bị đếm hai lần.
 - **Ảnh hưởng đội hình** cộng độ lệch log-thời-lượng của 10 hero được chọn, mỗi hero bị shrink theo
   `n/(n + DURATION_PRIOR_GAMES)`.
+- **Δ_TI** là phần dư còn lại sau tất cả những thứ trên, đo trên chính các ván TI đã đấu — mục 4.3.
 
-### 4.3 Fit trọng số & backtest
+### 4.3 Hiệu chỉnh theo giải: học từ các ván TI đã đấu
+
+Một ván TI **không phải** một ván pro trung bình, và điều đó chỉ đo được sau khi giải bắt đầu. Sau
+2 ngày đầu (59 ván) dữ liệu nói hai điều rất rõ:
+
+| Điều mô hình cũ giả định | Thực tế TI 2026 ngày 1–2 |
+|---|---|
+| Chênh lệch winrate nền giữa 2 draft là tín hiệu thật | Ở TI gần như **không** là tín hiệu |
+| Thời lượng ván bằng mặt bằng pro gần đây | Dài hơn: trung vị **47,2′** vs 37,1′ của cả pool pro 120 ngày |
+
+Chuyện winrate hero mất tác dụng ở TI là hợp lý khi nghĩ kỹ: `pub_winrate` đo hero mạnh yếu ra sao
+*trong tay người chơi trung bình*. Ở TI, 16 đội đều bốc từ cùng một pool hero đã chuẩn bị kỹ, nên
+một hero "winrate thấp" nằm trong draft của Falcons là một lựa chọn có tính toán, không phải một
+pick tồi. Kiểm chứng bằng ablation (fit trên toàn bộ trận không phải TI, chấm trên 59 ván TI):
+
+| Tổ hợp số hạng | Log-loss trên TI | Log-loss trên 450 trận pro khác |
+|---|---|---|
+| chỉ team | 0,6556 | 0,6697 |
+| team + hero | 0,6730 | 0,6653 |
+| team + khắc chế | **0,6389** | 0,6306 |
+| team + hero + khắc chế (mô hình cũ) | 0,6636 | **0,6181** |
+
+Thêm số hạng hero làm mô hình **tệ đi** trên TI (0,6556 → 0,6730) nhưng **tốt lên** ở giải khác —
+tức đây là hiệu ứng riêng của TI, không phải lỗi chung. Bootstrap 3.000 lần trên 59 ván: tắt hẳn số
+hạng hero cho kết quả tốt hơn trong **89,4%** lần lấy mẫu lại. Số hạng khắc chế thì ngược lại — chỉ
+12,9%, nên nó được để gần như nguyên.
+
+**Ba tham số, mỗi tham số một con số.** Đây là lý do 59 ván đủ dùng ở đây mà không đủ để fit lại
+3 trọng số chính: mỗi hiệu chỉnh chỉ là *một* tham số và có sẵn một giá trị mặc định hiển nhiên
+(nhân 1, cộng 0). Ước lượng thô rồi bị kéo về mặc định theo `n/(n + prior)`:
+
+| Hiệu chỉnh | Ước lượng thô | Sau shrink (59 ván) | Prior |
+|---|---|---|---|
+| `hero_mult` | 0,00 | **0,50** | 60 ván |
+| `matchup_mult` | 0,85 | **0,93** | 60 ván |
+| `duration_shift` | +0,070 log (se 0,036) | **+0,046 log** ≈ +4,7% | 30 ván |
+
+Dưới `TI_CONTEXT_MIN_GAMES = 20` ván thì **không hiệu chỉnh gì cả**. Càng nhiều ngày thi đấu, mẫu
+càng lớn, shrink càng nhẹ — nếu xu hướng là thật nó sẽ mạnh dần, còn nếu 2 ngày đầu chỉ là nhiễu thì
+ước lượng thô tự trôi về 1 và hiệu chỉnh tự tan.
+
+**Đo thử out-of-sample thật sự** (fit hiệu chỉnh trên 29 ván ngày 1, chấm trên 30 ván ngày 2 — dữ
+liệu mà nó chưa từng thấy):
+
+| Chỉ số trên ngày 2 | Không hiệu chỉnh | Có hiệu chỉnh |
+|---|---|---|
+| Log-loss | 0,7410 | **0,7346** |
+| Độ chính xác | 43,3% | **50,0%** |
+| Độ chính xác O/U | 60,0% | **66,7%** |
+| Brier O/U | 0,2247 | **0,2193** |
+
+Tốt lên ở cả 4 chỉ số. Nhưng 30 ván thì khoảng tin cậy rất rộng — đây là *bằng chứng ủng hộ*, không
+phải chứng minh. `python -m backend evaluate` in lại chính bảng này (`ti_context_holdout`) mỗi lần
+chạy, nên sau mỗi ngày thi đấu bạn tự kiểm tra được hiệu chỉnh còn đứng vững hay không.
+
+Áp lên cả 59 ván (in-sample cho hiệu chỉnh, nên coi là **cận trên**):
+
+| Chỉ số trên 59 ván TI | Không hiệu chỉnh | Có hiệu chỉnh |
+|---|---|---|
+| Log-loss | 0,6612 | **0,6477** |
+| Độ chính xác | 55,9% | **61,0%** |
+| Độ chính xác O/U | 66,1% | **72,9%** |
+| Brier O/U | 0,2169 | **0,2066** |
+
+Hiệu chỉnh **chỉ áp cho trận TI**. Backtest trên các giải khác không đổi một chữ số nào.
+
+### 4.4 Fit trọng số & backtest
 
 `python -m backend evaluate` chấm điểm mô hình trên chính dữ liệu đã tải:
 
@@ -176,10 +248,17 @@ P(over) = 1 − Φ( (ln(41·60) − μ) / σ )
   Bias hấp thụ lợi thế phe Radiant — app không dùng nó (người dùng chọn đội chứ không chọn phe),
   nhưng bỏ nó ra thì lợi thế đó sẽ bị dồn nhầm vào 3 trọng số kia.
 - **Chia dữ liệu theo thời gian**: fit trên 75% trận cũ, chấm trên 25% trận mới hơn.
-- `--apply` lưu trọng số vào DB; `model.weights()` sẽ ưu tiên dùng chúng thay cho hằng số config.
+- **Hai lần fit, hai mục đích khác nhau.** Lần fit theo lát cắt thời gian ở trên là để *đo* — nó là
+  con số duy nhất nói được mô hình có tổng quát hoá hay không. Nhưng trọng số **được lưu** thì fit
+  trên **toàn bộ** dữ liệu, kể cả 25% mới nhất và cả các ván TI: vứt đi đúng phần dữ liệu gần nhất
+  với những trận sắp dự đoán là phí phạm. Trước đây app lưu bộ trọng số fit trên 75% cũ, tức bỏ
+  không ~470 trận mới nhất.
+- `--apply` lưu trọng số + hiệu chỉnh theo giải vào DB; `model.weights()` và `model.ti_context()`
+  sẽ ưu tiên dùng chúng thay cho hằng số config.
 
-**Không thể "train" bằng một ngày thi đấu.** 18 trận không đủ để xác định 3 tham số — ép nó fit
-thì chỉ là fit nhiễu. Các trận trong ngày được **chấm như mẫu held-out**, không đưa vào fit.
+**Vẫn không thể "train" 3 trọng số bằng vài ngày thi đấu.** 59 trận không đủ để xác định 3 tham số
+tự do. Cái 59 trận đó *đủ* để làm là 3 hiệu chỉnh một-tham-số ở mục 4.3 — mỗi cái chỉ ước lượng một
+con số quanh một giá trị mặc định đã biết trước.
 
 **Vì sao số hạng hero dùng `pub_winrate` chứ không phải `winrate`:** `winrate` được kéo về phía
 mẫu trận pro mà app tự tải — tức là **chính tập trận đang fit**. Dùng nó thì đặc trưng hero mang sẵn
@@ -193,33 +272,53 @@ Vẫn còn một điểm chưa xử lý được: bảng tỉ lệ thắng và b
 
 ### Kết quả đo thực tế
 
-Fit trên 1.377 trận (30/5 → 13/8/2026), chấm trên 459 trận mới hơn:
+Dataset 1.930 trận (26/5 → 14/8/2026), fit trên 1.447 trận cũ, chấm trên 483 trận mới hơn:
 
 | Chỉ số | Trọng số đã fit | Trọng số config cũ | Tung đồng xu |
 |---|---|---|---|
-| Log-loss | **0.6254** | 0.6651 | 0.6931 |
-| Độ chính xác | **63.8%** | 59.0% | 50% |
-| Brier | **0.2186** | 0.2330 | 0.25 |
+| Log-loss | **0,6334** | 0,6698 | 0,6931 |
+| Độ chính xác | **62,5%** | 58,8% | 50% |
+| Brier | **0,2223** | 0,2387 | 0,25 |
 
-Trọng số fit được: `team=0.756`, `hero=1.048`, `matchup=3.0`, bias phe Radiant `+0.122`.
+Trọng số lưu vào DB (fit trên toàn bộ 1.930 trận): `team=0.724`, `hero=1.025`, `matchup=3.0`,
+bias phe Radiant `+0.118`.
 
 **Hiệu chuẩn trên tập test** — cột "dự đoán" và "thực tế" bám nhau khá sát, nghĩa là con số %
 mà app đưa ra có ý nghĩa thật chứ không chỉ là thứ tự hơn kém:
 
 | Khoảng dự đoán | Số trận | App dự đoán | Thực tế |
 |---|---|---|---|
-| 0–20% | 7 | 16.5% | 14.3% |
-| 20–40% | 80 | 32.4% | 25.0% |
-| 40–60% | 202 | 49.9% | 52.0% |
-| 60–80% | 144 | 67.8% | 67.4% |
-| 80–100% | 26 | 83.2% | 88.5% |
+| 0–20% | 7 | 16,3% | 14,3% |
+| 20–40% | 87 | 32,4% | 28,7% |
+| 40–60% | 216 | 50,0% | 52,3% |
+| 60–80% | 147 | 67,9% | 66,7% |
+| 80–100% | 26 | 83,2% | 88,5% |
 
-**Điểm yếu thật sự nằm ở O/U**: trên tập test, độ chính xác O/U chỉ **56.2%** trong khi tỉ lệ over
-thực tế là 55.6% — nghĩa là mô hình gần như chỉ đang đoán theo xu hướng chung chứ chưa thêm được
-mấy giá trị. Phần thắng/thua đáng tin hơn hẳn phần thời lượng.
+**Trên trận pro nói chung, O/U vẫn là điểm yếu**: độ chính xác 54,9% trong khi tỉ lệ over thực tế
+là 56,3% — mô hình gần như chỉ đang đoán theo xu hướng chung. Nhưng **riêng ở TI thì khác**: nhờ
+`duration_shift` ở mục 4.3, độ chính xác O/U trên 59 ván TI là **72,9%** (tỉ lệ over thực tế 71,2%,
+mô hình chưa hiệu chỉnh đạt 66,1%). Nói thẳng: phần lớn giá trị đến từ việc nhận ra ván TI dài hơn
+mặt bằng, chứ chưa phải từ việc phân biệt ván nào dài ván nào ngắn.
 
-### 4.4 Giới hạn cần biết
+**Còn thứ đã thử và không dùng** (ghi lại để khỏi thử lại):
 
+- *Đánh trọng số theo thời gian* (trận mới tính nặng hơn, half-life 45–365 ngày): log-loss trên tập
+  test xấu đi đều ở mọi half-life (0,6334 → 0,6355). Không dùng.
+- *Dò lại tham số Elo* (`ELO_K` 14–56 × half-life 120–∞ × cửa sổ 365–1000 ngày, 75 tổ hợp): toàn bộ
+  lưới nằm trong khoảng log-loss 0,6606–0,6667, tức chênh nhau ở mức nhiễu. Cấu hình hiện tại
+  (K=28, half-life 300, 640 ngày) đạt 0,6622 — đã đủ tốt, không đổi.
+- *Nhân một hệ số nhiệt độ lên toàn bộ logit ở TI* (kiểu Platt scaling): fit trên ngày 1 cho hệ số
+  1,5 nhưng chấm trên ngày 2 lại **tệ hơn** để nguyên. Không dùng — cái sai không nằm ở độ tự tin
+  tổng thể mà nằm ở riêng số hạng hero.
+
+### 4.5 Giới hạn cần biết
+
+- **Hiệu chỉnh TI dựa trên 2 ngày vòng bảng.** Vòng playoff là BO3/BO5 loại trực tiếp, đấu pháp và
+  nhịp độ có thể khác hẳn. Sau mỗi ngày thi đấu nên chạy lại `refresh drafts` rồi
+  `evaluate --apply` để hiệu chỉnh cập nhật theo dữ liệu mới nhất.
+- **`hero_mult = 0,50` là kết quả có shrink mạnh, không phải kết luận chắc chắn.** Ước lượng thô là
+  0,00 (tức "bỏ hẳn số hạng hero ở TI"), bootstrap ủng hộ ở mức 89% — đủ để nghiêng cán cân, chưa đủ
+  để chắc. Prior 60 ván cố tình giữ nó ở giữa cho tới khi có thêm dữ liệu.
 - **Ảnh hưởng của hero lên thời lượng cần mẫu lớn.** Với vài trăm trận pro (~30 trận/hero), sai số
   chuẩn của mỗi hero còn lớn hơn cả tín hiệu, nên shrinkage sẽ ép nó gần bằng 0 — đúng về mặt thống
   kê, nhưng nghĩa là lúc đó hero gần như không đổi được dự đoán O/U. Chạy `refresh drafts` nhiều lần
@@ -232,7 +331,8 @@ mấy giá trị. Phần thắng/thua đáng tin hơn hẳn phần thời lượ
   log-odds), cố ý để khiêm tốn.
 - **Winrate tuyển thủ gồm cả trận rank** — người hay đổi hero trong pub sẽ có mẫu khác với hero họ
   thật sự cầm khi thi đấu. Tín hiệu này nói về độ thuần thục hero, không phải phong độ thi đấu.
-- **Mô hình không biết** ai đang bệnh, roster thay đổi phút chót, lỗi mạng, hay áp lực tâm lý TI.
+- **Mô hình không biết** ai đang bệnh, lỗi mạng, hay áp lực tâm lý TI. Roster đổi phút chót thì
+  nguồn dữ liệu cũng trễ — dùng `python -m backend roster` để sửa tay (mục 5).
 - Đội mới / ít trận (ví dụ Iron Wing, HULIGANI) có rating kém tin cậy — app sẽ ghi chú điều này.
 
 Đây là công cụ thống kê tham khảo, **không phải lời khuyên cá cược**.
@@ -272,23 +372,53 @@ và nếu bạn chọn một tuyển thủ chưa có dữ liệu thì lần dự
 python -m backend refresh players
 ```
 
+**Sửa tay đội hình khi có thay đổi roster.** Cờ "đang trong đội" của OpenDota suy ra từ việc ai đã
+thực sự ra sân, nên nó trễ vài ngày sau một lần đổi người — đúng những ngày quan trọng nhất khi giải
+đang diễn ra. Ghi đè bằng:
+
+```bash
+python -m backend roster --team lgd-gaming --current Topson --former TaiLung
+```
+
+Các chỉnh tay này nằm trong bảng `roster_overrides` và được **áp lại sau mỗi lần `refresh players`**,
+nên không bị ghi đè ngược. Xem danh sách đang có bằng `python -m backend roster`; bỏ chỉnh tay của
+một đội bằng `--clear` rồi chạy `refresh players`.
+
 Dọn cache HTTP cũ và thu nhỏ file database:
 
 ```bash
 python -m backend compact
 ```
 
-Backtest mô hình và fit lại trọng số (`--apply` để lưu và dùng luôn):
+Backtest mô hình, fit lại trọng số và hiệu chỉnh theo giải (`--apply` để lưu và dùng luôn):
 
 ```bash
 python -m backend evaluate --apply
 ```
 
+**Quy trình nên chạy sau mỗi ngày thi đấu TI** — kết quả trong ngày vào Elo, draft trong ngày vào
+hiệu chỉnh theo giải:
+
+```bash
+python -m backend refresh history
+```
+
+```bash
+python -m backend refresh drafts --drafts 200
+```
+
+```bash
+python -m backend evaluate --apply --since 2026-08-13
+```
+
+Trong output của `evaluate`, hai khối đáng đọc nhất là `ti_context` (hiệu chỉnh đang được lưu) và
+`ti_context_holdout` (fit trên nửa đầu số ván TI, chấm trên nửa sau — chỗ để tự kiểm chứng).
+
 ## 6. API
 
 | Endpoint | Mô tả |
 |---|---|
-| `GET /api/status` | thông tin giải + tình trạng dữ liệu local |
+| `GET /api/status` | thông tin giải + tình trạng dữ liệu local + `weights` và `ti_context` đang dùng |
 | `GET /api/teams` | 16 đội TI kèm rating, đội hình, danh sách tuyển thủ chọn được (`roster`) |
 | `GET /api/heroes` | 127 hero kèm winrate ước tính |
 | `GET /api/roster/{slug}` | tuyển thủ của một đội; thêm `?hero_id=` để kèm record của họ trên hero đó |
@@ -301,6 +431,9 @@ python -m backend evaluate --apply
 
 `players_a[]` / `players_b[]` là account id OpenDota, xếp **cùng thứ tự** với `heroes_a[]` /
 `heroes_b[]` — phần tử thứ i là người cầm hero thứ i; để `null` nếu không muốn tính.
+
+Response của `/api/predict` có thêm `factors.ti_context` (hiệu chỉnh theo giải đang áp) và
+`factors.duration_terms.ti_context_log` (phần Δ_TI cộng vào thời lượng).
 
 Ví dụ:
 
@@ -344,4 +477,6 @@ data/
 | File database phình to | `python -m backend compact` |
 
 Muốn chỉnh mô hình thì sửa các hằng số ở đầu `backend/config.py` (`W_HERO_WINRATE`, `W_MATCHUP`,
-`ELO_K`, `DURATION_WINDOWS`, `OVER_UNDER_LINE_MIN`, …).
+`ELO_K`, `DURATION_WINDOWS`, `OVER_UNDER_LINE_MIN`, …). Riêng phần hiệu chỉnh theo giải có nhóm
+knob riêng: `TI_CONTEXT_MIN_GAMES`, `TI_DRAFT_PRIOR_GAMES`, `TI_DURATION_PRIOR_GAMES` — tăng prior
+lên là hiệu chỉnh thận trọng hơn, hạ xuống là tin dữ liệu TI nhiều hơn.
