@@ -394,13 +394,52 @@ def refresh_players(job: Job = JOB) -> dict:
               p.get("games_played") or 0, p.get("wins") or 0,
               1 if p.get("is_current_team_member") else 0) for p in people])
 
+        # Anyone still filed under this team but absent from the roster we just
+        # fetched has left it -- or was never on it, which is what happens when
+        # `ti_teams.team_id` gets corrected and the rows from the old team id
+        # are left behind.  Either way they are not current any more.
+        keep = [p["account_id"] for p in people]
+        sql = "UPDATE players SET is_current = 0 WHERE slug = ? AND is_current = 1"
+        if keep:
+            sql += f" AND account_id NOT IN ({','.join('?' * len(keep))})"
+        db.execute(sql, [t["slug"], *keep])
+
         # tie the Liquipedia roster (which has the roles) to the account ids
         by_name = {matching.normalize(p.get("name") or ""): p["account_id"] for p in people}
-        for pl in db.query("SELECT name FROM ti_players WHERE slug = ?", (t["slug"],)):
-            aid = by_name.get(matching.normalize(pl["name"]))
+        wiki = [r["name"] for r in db.query(
+            "SELECT name FROM ti_players WHERE slug = ? AND role NOT LIKE '%coach%'",
+            (t["slug"],))]
+        taken: set[int] = set()
+        unmatched: list[str] = []
+        for name in wiki:
+            aid = by_name.get(matching.normalize(name))
             if aid:
                 db.execute("UPDATE ti_players SET account_id = ? WHERE slug = ? AND name = ?",
-                           (aid, t["slug"], pl["name"]))
+                           (aid, t["slug"], name))
+                taken.add(aid)
+            else:
+                unmatched.append(name)
+
+        # The two sources abbreviate differently: "ATF" / "AMMAR_THE_F", "KJ" /
+        # "KingJungles", "Malady" / "Maladych".  When exactly one wiki name and
+        # exactly one current OpenDota account are left over, the pairing is
+        # forced and no guessing is involved - so pair them, and only then.
+        # Without this the player keeps a null role, which drops him to the end
+        # of the role-ordered default lineup and silently mis-slots the team.
+        # A manual override saying "this player is out" is knowledge OpenDota
+        # does not have yet, so honour it here too - otherwise a benched player
+        # counts as a leftover and blocks an otherwise forced pairing.
+        benched = {r["account_id"] for r in db.query(
+            "SELECT account_id FROM roster_overrides WHERE slug = ? AND is_current = 0",
+            (t["slug"],))}
+        spare = [p["account_id"] for p in people
+                 if p.get("is_current_team_member") and p["account_id"] not in taken
+                 and p["account_id"] not in benched]
+        if len(unmatched) == 1 and len(spare) == 1:
+            db.execute("UPDATE ti_players SET account_id = ? WHERE slug = ? AND name = ?",
+                       (spare[0], t["slug"], unmatched[0]))
+            log.info("roster %s: paired wiki %r with account %s by elimination",
+                     t["name"], unmatched[0], spare[0])
 
         roster.extend((p["account_id"], t["slug"]) for p in people)
 

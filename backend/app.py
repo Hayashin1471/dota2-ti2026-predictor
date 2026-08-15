@@ -76,6 +76,7 @@ def _roster(slug: str) -> list[dict]:
 
     out: list[dict] = []
     seen: set[str] = set()
+    seen_accounts: set[int] = set()
 
     for p in db.query(
             "SELECT account_id, name, is_current, team_games, hero_games FROM players "
@@ -90,9 +91,15 @@ def _roster(slug: str) -> list[dict]:
             "total_games": p["hero_games"] or 0, "resolved": True,
         })
         seen.add(key)
+        seen_accounts.add(p["account_id"])
 
     for w in wiki:
-        if matching.normalize(w["name"]) in seen or re.search(r"coach", w["role"] or "", re.I):
+        # The account check catches the players the two sources spell
+        # differently ("KJ" / "KingJungles"): they are already in the list under
+        # the OpenDota name, and listing them twice makes one person look like
+        # two.
+        if (matching.normalize(w["name"]) in seen or w["account_id"] in seen_accounts
+                or re.search(r"coach", w["role"] or "", re.I)):
             continue
         out.append({"account_id": None, "name": w["name"], "role": w["role"],
                     "current": True, "team_games": 0, "total_games": 0, "resolved": False})

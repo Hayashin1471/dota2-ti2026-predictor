@@ -104,13 +104,23 @@ def build_index(od_teams: list[dict], active_within_days: int = 400) -> dict[str
 
     Org names get recycled: OpenDota has two "LGD Gaming" rows, one dormant
     since 2024 and one playing today.  Currently-active teams therefore win a
-    name collision, and only then does the higher rating break the tie.
+    name collision.
+
+    Among those, the tie goes to whoever **played most recently**, not to
+    whoever is rated higher.  Rating was the old tiebreak and it picked the
+    wrong "Nigma Galaxy": the retired roster carried a rating of 1403 from its
+    good years while the entity actually at TI sat at 1278, so every rating,
+    match history and roster lookup for that team pointed at the dead one.  A
+    400-day activity window is wide enough that "still active" does not
+    separate a team dormant since May from one that played this morning; the
+    last match date does.
     """
     cutoff = time.time() - active_within_days * 86400
     index: dict[str, dict] = {}
     ranked = sorted(
         od_teams,
         key=lambda t: (0 if (t.get("last_match_time") or 0) >= cutoff else 1,
+                       -(t.get("last_match_time") or 0),
                        -(t.get("rating") or 0)),
     )
     for team in ranked:

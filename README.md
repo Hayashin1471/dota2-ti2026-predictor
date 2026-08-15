@@ -179,7 +179,7 @@ Một ván TI **không phải** một ván pro trung bình, và điều đó ch�
 | Điều mô hình cũ giả định | Thực tế TI 2026 ngày 1–2 |
 |---|---|
 | Chênh lệch winrate nền giữa 2 draft là tín hiệu thật | Ở TI gần như **không** là tín hiệu |
-| Thời lượng ván bằng mặt bằng pro gần đây | Dài hơn: trung vị **47,2′** vs 37,1′ của cả pool pro 120 ngày |
+| Thời lượng ván bằng mặt bằng pro gần đây | Dài hơn: trung vị **46,9′** vs 37,2′ của cả pool pro 120 ngày |
 
 Chuyện winrate hero mất tác dụng ở TI là hợp lý khi nghĩ kỹ: `pub_winrate` đo hero mạnh yếu ra sao
 *trong tay người chơi trung bình*. Ở TI, 16 đội đều bốc từ cùng một pool hero đã chuẩn bị kỹ, nên
@@ -188,15 +188,15 @@ pick tồi. Kiểm chứng bằng ablation (fit trên toàn bộ trận không p
 
 | Tổ hợp số hạng | Log-loss trên TI | Log-loss trên 450 trận pro khác |
 |---|---|---|
-| chỉ team | 0,6556 | 0,6697 |
-| team + hero | 0,6730 | 0,6653 |
-| team + khắc chế | **0,6389** | 0,6306 |
-| team + hero + khắc chế (mô hình cũ) | 0,6636 | **0,6181** |
+| chỉ team | 0,6583 | 0,6690 |
+| team + hero | 0,6740 | 0,6648 |
+| team + khắc chế | **0,6408** | 0,6304 |
+| team + hero + khắc chế (mô hình cũ) | 0,6650 | **0,6177** |
 
-Thêm số hạng hero làm mô hình **tệ đi** trên TI (0,6556 → 0,6730) nhưng **tốt lên** ở giải khác —
+Thêm số hạng hero làm mô hình **tệ đi** trên TI (0,6583 → 0,6740) nhưng **tốt lên** ở giải khác —
 tức đây là hiệu ứng riêng của TI, không phải lỗi chung. Bootstrap 3.000 lần trên 59 ván: tắt hẳn số
-hạng hero cho kết quả tốt hơn trong **89,4%** lần lấy mẫu lại. Số hạng khắc chế thì ngược lại — chỉ
-12,9%, nên nó được để gần như nguyên.
+hạng hero cho kết quả tốt hơn trong **89,0%** lần lấy mẫu lại. Số hạng khắc chế thì ngược lại — chỉ
+12,2%, nên nó được để gần như nguyên.
 
 **Ba tham số, mỗi tham số một con số.** Đây là lý do 59 ván đủ dùng ở đây mà không đủ để fit lại
 3 trọng số chính: mỗi hiệu chỉnh chỉ là *một* tham số và có sẵn một giá trị mặc định hiển nhiên
@@ -205,8 +205,8 @@ hạng hero cho kết quả tốt hơn trong **89,4%** lần lấy mẫu lại. 
 | Hiệu chỉnh | Ước lượng thô | Sau shrink (59 ván) | Prior |
 |---|---|---|---|
 | `hero_mult` | 0,00 | **0,50** | 60 ván |
-| `matchup_mult` | 0,85 | **0,93** | 60 ván |
-| `duration_shift` | +0,070 log (se 0,036) | **+0,046 log** ≈ +4,7% | 30 ván |
+| `matchup_mult` | 0,90 | **0,95** | 60 ván |
+| `duration_shift` | +0,068 log (se 0,036) | **+0,045 log** ≈ +4,6% | 30 ván |
 
 Dưới `TI_CONTEXT_MIN_GAMES = 20` ván thì **không hiệu chỉnh gì cả**. Càng nhiều ngày thi đấu, mẫu
 càng lớn, shrink càng nhẹ — nếu xu hướng là thật nó sẽ mạnh dần, còn nếu 2 ngày đầu chỉ là nhiễu thì
@@ -217,10 +217,10 @@ liệu mà nó chưa từng thấy):
 
 | Chỉ số trên ngày 2 | Không hiệu chỉnh | Có hiệu chỉnh |
 |---|---|---|
-| Log-loss | 0,7410 | **0,7346** |
-| Độ chính xác | 43,3% | **50,0%** |
-| Độ chính xác O/U | 60,0% | **66,7%** |
-| Brier O/U | 0,2247 | **0,2193** |
+| Log-loss | 0,7381 | **0,7319** |
+| Độ chính xác | 46,7% | **50,0%** |
+| Độ chính xác O/U | 63,3% | **66,7%** |
+| Brier O/U | 0,2232 | **0,2181** |
 
 Tốt lên ở cả 4 chỉ số. Nhưng 30 ván thì khoảng tin cậy rất rộng — đây là *bằng chứng ủng hộ*, không
 phải chứng minh. `python -m backend evaluate` in lại chính bảng này (`ti_context_holdout`) mỗi lần
@@ -230,10 +230,10 @@ chạy, nên sau mỗi ngày thi đấu bạn tự kiểm tra được hiệu ch
 
 | Chỉ số trên 59 ván TI | Không hiệu chỉnh | Có hiệu chỉnh |
 |---|---|---|
-| Log-loss | 0,6612 | **0,6477** |
-| Độ chính xác | 55,9% | **61,0%** |
-| Độ chính xác O/U | 66,1% | **72,9%** |
-| Brier O/U | 0,2169 | **0,2066** |
+| Log-loss | 0,6632 | **0,6503** |
+| Độ chính xác | 55,9% | 55,9% |
+| Độ chính xác O/U | 67,8% | **72,9%** |
+| Brier O/U | 0,2159 | **0,2061** |
 
 Hiệu chỉnh **chỉ áp cho trận TI**. Backtest trên các giải khác không đổi một chữ số nào.
 
@@ -272,38 +272,39 @@ Vẫn còn một điểm chưa xử lý được: bảng tỉ lệ thắng và b
 
 ### Kết quả đo thực tế
 
-Dataset 1.930 trận (26/5 → 14/8/2026), fit trên 1.447 trận cũ, chấm trên 483 trận mới hơn:
+Dataset 2.168 trận (26/5 → 14/8/2026), fit trên 1.626 trận cũ, chấm trên 542 trận mới hơn:
 
 | Chỉ số | Trọng số đã fit | Trọng số config cũ | Tung đồng xu |
 |---|---|---|---|
-| Log-loss | **0,6334** | 0,6698 | 0,6931 |
-| Độ chính xác | **62,5%** | 58,8% | 50% |
-| Brier | **0,2223** | 0,2387 | 0,25 |
+| Log-loss | **0,6175** | 0,6481 | 0,6931 |
+| Độ chính xác | **63,1%** | 60,9% | 50% |
+| Brier | **0,2152** | 0,2286 | 0,25 |
 
-Trọng số lưu vào DB (fit trên toàn bộ 1.930 trận): `team=0.724`, `hero=1.025`, `matchup=3.0`,
-bias phe Radiant `+0.118`.
+Trọng số lưu vào DB (fit trên toàn bộ 2.168 trận): `team=0.709`, `hero=1.023`, `matchup=3.0`,
+bias phe Radiant `+0.152`.
 
 **Hiệu chuẩn trên tập test** — cột "dự đoán" và "thực tế" bám nhau khá sát, nghĩa là con số %
 mà app đưa ra có ý nghĩa thật chứ không chỉ là thứ tự hơn kém:
 
 | Khoảng dự đoán | Số trận | App dự đoán | Thực tế |
 |---|---|---|---|
-| 0–20% | 7 | 16,3% | 14,3% |
-| 20–40% | 87 | 32,4% | 28,7% |
-| 40–60% | 216 | 50,0% | 52,3% |
-| 60–80% | 147 | 67,9% | 66,7% |
-| 80–100% | 26 | 83,2% | 88,5% |
+| 0–20% | 7 | 16,6% | 0,0% |
+| 20–40% | 79 | 32,5% | 25,3% |
+| 40–60% | 245 | 50,4% | 46,5% |
+| 60–80% | 181 | 68,1% | 69,1% |
+| 80–100% | 30 | 83,4% | 90,0% |
 
-**Trên trận pro nói chung, O/U vẫn là điểm yếu**: độ chính xác 54,9% trong khi tỉ lệ over thực tế
-là 56,3% — mô hình gần như chỉ đang đoán theo xu hướng chung. Nhưng **riêng ở TI thì khác**: nhờ
+**Trên trận pro nói chung, O/U vẫn là điểm yếu**: độ chính xác 54,1% trong khi tỉ lệ over thực tế
+là 54,6% — mô hình gần như chỉ đang đoán theo xu hướng chung. Nhưng **riêng ở TI thì khác**: nhờ
 `duration_shift` ở mục 4.3, độ chính xác O/U trên 59 ván TI là **72,9%** (tỉ lệ over thực tế 71,2%,
-mô hình chưa hiệu chỉnh đạt 66,1%). Nói thẳng: phần lớn giá trị đến từ việc nhận ra ván TI dài hơn
+mô hình chưa hiệu chỉnh đạt 67,8%). Nói thẳng: phần lớn giá trị đến từ việc nhận ra ván TI dài hơn
 mặt bằng, chứ chưa phải từ việc phân biệt ván nào dài ván nào ngắn.
 
 **Còn thứ đã thử và không dùng** (ghi lại để khỏi thử lại):
 
 - *Đánh trọng số theo thời gian* (trận mới tính nặng hơn, half-life 45–365 ngày): log-loss trên tập
-  test xấu đi đều ở mọi half-life (0,6334 → 0,6355). Không dùng.
+  test đi ngang trong khoảng 0,6173–0,6185 so với 0,6175 khi không đánh trọng số — chênh lệch ở mức
+  nhiễu, đổi dấu tuỳ half-life. Không đáng thêm một knob nữa. Không dùng.
 - *Dò lại tham số Elo* (`ELO_K` 14–56 × half-life 120–∞ × cửa sổ 365–1000 ngày, 75 tổ hợp): toàn bộ
   lưới nằm trong khoảng log-loss 0,6606–0,6667, tức chênh nhau ở mức nhiễu. Cấu hình hiện tại
   (K=28, half-life 300, 640 ngày) đạt 0,6622 — đã đủ tốt, không đổi.
@@ -333,6 +334,12 @@ mặt bằng, chứ chưa phải từ việc phân biệt ván nào dài ván n�
   thật sự cầm khi thi đấu. Tín hiệu này nói về độ thuần thục hero, không phải phong độ thi đấu.
 - **Mô hình không biết** ai đang bệnh, lỗi mạng, hay áp lực tâm lý TI. Roster đổi phút chót thì
   nguồn dữ liệu cũng trễ — dùng `python -m backend roster` để sửa tay (mục 5).
+- **Tên tổ chức bị tái sử dụng trên OpenDota.** Nigma Galaxy có hai entity trùng tên: một đã ngừng
+  đấu từ 8/5 nhưng còn rating 1403 từ thời hoàng kim, một đang thi đấu ở TI với rating 1278. Khi
+  trùng tên, `matching.build_index` giờ ưu tiên **đội đấu gần đây nhất** chứ không phải rating cao
+  nhất — rating là tiêu chí cũ và nó chọn nhầm đội chết, kéo theo sai cả Elo, lịch sử đối đầu lẫn
+  đội hình của Nigma. Nếu thấy một đội có rating hoặc đội hình vô lý, kiểm tra `ti_teams.team_id`
+  trước tiên.
 - Đội mới / ít trận (ví dụ Iron Wing, HULIGANI) có rating kém tin cậy — app sẽ ghi chú điều này.
 
 Đây là công cụ thống kê tham khảo, **không phải lời khuyên cá cược**.
