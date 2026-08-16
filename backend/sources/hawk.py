@@ -80,8 +80,14 @@ def fetch_results(day: date | None = None, ttl: float | None = None) -> list[dic
     else:
         day_str = day.isoformat()
         path = f"/dota-2/matches/results/{day_str}"
-        # a finished day never changes, so cache it for a long time
-        ttl = config.TTL_LONG if ttl is None else ttl
+        if ttl is None:
+            # A *finished* day never changes and caches for a week.  Today's
+            # page emphatically does change, and so does yesterday's while the
+            # late games are still being written up - hawk.live works to its own
+            # timezone, and series that start before midnight finish after it.
+            # Caching those for a week is how a refresh at breakfast pins an
+            # empty page in place for the rest of the tournament.
+            ttl = config.TTL_LONG if (date.today() - day).days >= 2 else config.TTL_SHORT
 
     html = fetcher.get_text(BASE + path, ttl=ttl)
     soup = BeautifulSoup(html, "lxml")
