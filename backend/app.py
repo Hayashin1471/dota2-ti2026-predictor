@@ -198,9 +198,15 @@ def api_heroes():
 
 @app.get("/api/schedule")
 def api_schedule():
+    # Upcoming first: the strip is there to load the two teams of a match you
+    # are about to watch, and a finished one is only useful for reference.
+    # Bracket rows come from the wiki with non-numeric keys, so they sort by
+    # key text once the numeric GosuGamers ids are out of the way.
     rows = db.query(
-        "SELECT match_key, team_a, team_b, score_a, score_b, status, stage, url "
-        "FROM ti_schedule ORDER BY CAST(match_key AS INTEGER) DESC")
+        "SELECT match_key, team_a, team_b, score_a, score_b, status, stage, url, "
+        "slug_a, slug_b FROM ti_schedule "
+        "ORDER BY CASE status WHEN 'live' THEN 0 WHEN 'upcoming' THEN 1 ELSE 2 END, "
+        "CAST(match_key AS INTEGER) DESC, match_key ASC")
     return {"matches": [dict(r) for r in rows], "count": len(rows)}
 
 

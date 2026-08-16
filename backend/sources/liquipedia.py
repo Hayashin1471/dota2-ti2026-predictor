@@ -204,6 +204,68 @@ def parse_participants(wikitext: str) -> list[dict]:
     return teams
 
 
+def parse_main_event(wikitext: str) -> dict:
+    """The Main Event bracket: eight teams, and every slot with its round name.
+
+    The bracket template numbers its slots `R1M1`, `R2M3`, ... which says where
+    a match sits in the tree but not what the round is called.  The round names
+    live in the HTML comments Liquipedia's editors leave above each block
+    (`<!-- Upper Bracket Quarterfinals -->`), so each match takes the name of
+    the nearest comment above it.
+
+    Only the first round has teams in it; later slots are filled in as the
+    bracket resolves, and come back with `opponents: []`.
+    """
+    sections = [(m.start(), m.group(1).strip())
+                for m in re.finditer(r"<!--(.*?)-->", wikitext, re.S)]
+
+    def round_name(pos: int) -> str:
+        name = ""
+        for start, label in sections:
+            if start < pos:
+                name = label
+            else:
+                break
+        return name
+
+    dates = _extract_template(wikitext, "HiddenDataBox") or ""
+    window = _named(_split_top_level(dates))
+
+    matches: list[dict] = []
+    for m in re.finditer(r"\|(R\d+M\d+)=\{\{Match", wikitext):
+        # a slot's own body ends where the next one begins
+        nxt = wikitext.find("{{Match", m.end())
+        body = wikitext[m.end():nxt if nxt != -1 else len(wikitext)]
+        opponents = [_clean(o) for o in
+                     re.findall(r"opponent\d=\{\{TeamOpponent\|([^|}]+)", body)]
+        when = re.search(r"\|date=([^\n|]+)", body)
+        matches.append({
+            "slot": m.group(1),
+            "round": round_name(m.start()),
+            "opponents": opponents[:2],
+            "date": _clean(when.group(1)).replace("{{Abbr/CST}}", "CST").strip()
+            if when else "",
+        })
+
+    teams: list[str] = []
+    for match in matches:
+        for name in match["opponents"]:
+            if name not in teams:
+                teams.append(name)
+
+    return {
+        "start_date": window.get("sdate", ""),
+        "end_date": window.get("edate", ""),
+        "teams": teams,
+        "matches": matches,
+    }
+
+
+def fetch_main_event(page: str | None = None, ttl: float = config.TTL_SHORT) -> dict:
+    """Download and parse the Main Event bracket page."""
+    return parse_main_event(fetch_wikitext(page or config.LIQUIPEDIA_MAIN_EVENT_PAGE, ttl=ttl))
+
+
 def fetch_all(ttl: float = config.TTL_MEDIUM) -> dict:
     wikitext = fetch_wikitext(ttl=ttl)
     return {

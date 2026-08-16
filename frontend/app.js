@@ -143,7 +143,7 @@ async function loadSchedule() {
           <span class="sc">${score}</span>
           <span class="t" style="text-align:right">${escapeHtml(m.team_b)}</span>
         </div>`;
-      card.addEventListener('click', () => loadFixture(m.team_a, m.team_b));
+      card.addEventListener('click', () => loadFixture(m.team_a, m.team_b, m.slug_a, m.slug_b));
       strip.appendChild(card);
     }
   } catch (err) { /* schedule is optional */ }
@@ -258,14 +258,21 @@ function renderTeamHistory(data) {
 }
 
 /* Match a GosuGamers name back onto a team in the dropdown. */
-function loadFixture(nameA, nameB) {
+function loadFixture(nameA, nameB, slugA, slugB) {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const find = (name) => {
+  // The backend resolves each fixture to a slug when it stores it, using the
+  // alias table that knows "BoomBoys" is BetBoom.  Matching on the display
+  // name here is only the fallback for rows stored before that existed.
+  const find = (name, slug) => {
+    if (slug) {
+      const bySlug = state.teams.find((t) => t.slug === slug);
+      if (bySlug) return bySlug;
+    }
     const n = norm(name);
     return state.teams.find((t) => norm(t.name) === n)
         || state.teams.find((t) => norm(t.name).includes(n) || n.includes(norm(t.name)));
   };
-  const ta = find(nameA), tb = find(nameB);
+  const ta = find(nameA, slugA), tb = find(nameB, slugB);
   if (!ta || !tb) { toast('Không khớp được team trong danh sách tham dự.'); return; }
   selectTeam('a', ta.slug);
   selectTeam('b', tb.slug);

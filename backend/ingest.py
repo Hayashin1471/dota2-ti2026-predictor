@@ -157,9 +157,10 @@ def refresh_core(job: Job = JOB) -> dict:
         db.execute("DELETE FROM ti_schedule")
         db.executemany(
             "INSERT OR REPLACE INTO ti_schedule(match_key,team_a,team_b,score_a,score_b,"
-            "status,stage,url,raw) VALUES (?,?,?,?,?,?,?,?,?)",
+            "status,stage,url,raw,slug_a,slug_b) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             [(m["match_key"], m["team_a"], m["team_b"], m["score_a"], m["score_b"],
-              m["status"], m["stage"], m["url"], m["raw"]) for m in schedule["matches"]],
+              m["status"], m["stage"], m["url"], m["raw"],
+              ti_slug(m["team_a"]), ti_slug(m["team_b"])) for m in schedule["matches"]],
         )
         db.set_meta("gosu_tournament_slug", schedule.get("tournament_slug"))
         db.set_meta("gosugamers_updated", time.time())
@@ -167,6 +168,52 @@ def refresh_core(job: Job = JOB) -> dict:
         result["schedule"] = len(schedule["matches"])
     except Exception as exc:                                   # noqa: BLE001
         job.error(f"GosuGamers: {exc}")
+
+    # 4b. Liquipedia: the Main Event bracket ------------------------------
+    # GosuGamers only lists what has already been played, so the upcoming
+    # knockout pairings have to come from the wiki's bracket page.  These rows
+    # go into the same table, after the GosuGamers wipe above.
+    try:
+        bracket = liquipedia.fetch_main_event()
+        rows = []
+        for m in bracket["matches"]:
+            if len(m["opponents"]) != 2:
+                continue                    # slot not filled in yet
+            rows.append((
+                f"liquipedia-{m['slot']}", m["opponents"][0], m["opponents"][1],
+                None, None, "upcoming",
+                f"{config.TI_LEAGUE_NAME} - {m['round']}",
+                f"https://liquipedia.net/dota2/{config.LIQUIPEDIA_MAIN_EVENT_PAGE}",
+                m["date"],
+                ti_slug(m["opponents"][0]), ti_slug(m["opponents"][1]),
+            ))
+        # Once a bracket match gets close GosuGamers lists it too, under the
+        # bare tournament name.  Drop its copy so the pairing does not show up
+        # twice: the wiki row is the better one, it carries the round name.
+        for key, a, b, *_ in rows:
+            pair = {matching.normalize(a), matching.normalize(b)}
+            for existing in db.query(
+                    "SELECT match_key, team_a, team_b FROM ti_schedule "
+                    "WHERE match_key != ? AND status != 'finished'", (key,)):
+                if {matching.normalize(existing["team_a"] or ""),
+                        matching.normalize(existing["team_b"] or "")} == pair:
+                    db.execute("DELETE FROM ti_schedule WHERE match_key = ?",
+                               (existing["match_key"],))
+
+        db.executemany(
+            "INSERT OR REPLACE INTO ti_schedule(match_key,team_a,team_b,score_a,score_b,"
+            "status,stage,url,raw,slug_a,slug_b) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        db.set_meta("main_event", {
+            "start_date": bracket["start_date"], "end_date": bracket["end_date"],
+            "teams": bracket["teams"],
+            "matches": bracket["matches"],
+            "updated": time.time(),
+        })
+        result["main_event"] = {"teams": len(bracket["teams"]),
+                                "scheduled": len(rows),
+                                "slots": len(bracket["matches"])}
+    except Exception as exc:                                   # noqa: BLE001
+        job.error(f"Liquipedia Main Event: {exc}")
 
     job.update(done=4, message="resolving teams across sources")
 
@@ -213,6 +260,12 @@ def refresh_core(job: Job = JOB) -> dict:
                        "VALUES (?,?,?,?)", player_rows)
     result["teams"] = len(team_rows)
 
+    # the bracket we just downloaded is what tells group and knockout apart
+    try:
+        result["stages"] = label_match_stages()
+    except Exception as exc:                                   # noqa: BLE001
+        job.error(f"stage labels: {exc}")
+
     db.set_meta("core_updated", time.time())
     job.update(done=5)
     job.finish(f"core: {result['teams']} teams, {result['heroes']} heroes, "
@@ -256,6 +309,11 @@ def refresh_history(job: Job = JOB) -> dict:
 
     job.update(done=len(teams), message="computing Elo ratings")
     rated = model.rebuild_ratings()
+    # new matches arrived, so the group/playoff labels need extending to them
+    try:
+        label_match_stages()
+    except Exception as exc:                                   # noqa: BLE001
+        job.error(f"stage labels: {exc}")
     db.set_meta("history_updated", time.time())
     job.update(done=len(teams) + 1)
     job.finish(f"history: {inserted} match rows, {rated} teams rated")
@@ -316,6 +374,126 @@ def refresh_player_heroes(account_ids: list[int], job: Job | None = None) -> int
             if job:
                 job.error(f"player {aid}: {exc}")
     return len(todo)
+
+
+# A GosuGamers stage string naming one of these is a bracket series; anything
+# else at TI is the group phase.
+#
+# Two traps here, both learned the hard way on TI 2026:
+#
+# * "main event" is not one of these.  GosuGamers uses it for the whole LAN, so
+#   the Swiss group rounds are labelled "Main Event - Round N" and matching on
+#   it would sweep in the entire tournament.
+# * neither is "elimination".  TI 2026's Swiss phase ends with "Main Event -
+#   Elimination Round" series that decide which eight teams advance - those are
+#   the last games *of the group stage*, not the first games of the bracket.
+#   hawk.live agrees: it files all 109 group-phase games, elimination round
+#   included, under one "The International 2026 Group Stage" tournament.
+KNOCKOUT_WORDS = ("playoff", "upper bracket", "lower bracket",
+                  "quarterfinal", "semifinal", "grand final", "final")
+
+
+def ti_slug(name: str | None) -> str | None:
+    """Resolve a source's spelling of a TI team to its `ti_teams` slug.
+
+    Fixtures name teams the way their source does; the app keys everything off
+    the slug.  Doing the mapping once here, at storage time, keeps the alias
+    table (`matching.ALIASES`) as the single place that knows BoomBoys is
+    BetBoom, instead of the frontend having to guess from the display name.
+    """
+    if not name:
+        return None
+    index: dict[str, dict] = {}
+    for r in db.query("SELECT slug, name FROM ti_teams"):
+        entry = {"name": r["name"], "slug": r["slug"]}
+        for key in {matching.normalize(r["name"]),
+                    "".join(sorted(matching.core_tokens(r["name"])))}:
+            index.setdefault(key, entry)
+    team, _ = matching.resolve(name, index)
+    return team["slug"] if team else None
+
+
+def label_match_stages() -> dict:
+    """Mark each TI match as 'group' or 'playoff' using the GosuGamers bracket.
+
+    Only the bracket knows this.  The match rows from OpenDota carry a league
+    name and nothing else, and hawk.live files every TI series under one
+    "Group Stage" tournament slug - 44 series covering all 109 games, knockout
+    included - so it cannot be used to tell the phases apart.
+
+    A knockout series is resolved to matches by taking the *last* `score_a +
+    score_b` games between the two teams: the bracket is played after the group
+    phase, so the most recent games between a pair are the knockout ones even
+    when the same pair also met in a group round.
+    """
+    # The bracket spells teams the way GosuGamers does ("Boomboys" for BetBoom),
+    # so go through the same resolver the rest of the app uses for team names.
+    index: dict[str, dict] = {}
+    for r in db.query("SELECT name, team_id FROM ti_teams WHERE team_id IS NOT NULL"):
+        entry = {"name": r["name"], "team_id": r["team_id"]}
+        for key in {matching.normalize(r["name"]),
+                    "".join(sorted(matching.core_tokens(r["name"])))}:
+            index.setdefault(key, entry)
+
+    def team_id(name: str) -> int | None:
+        team, _ = matching.resolve(name or "", index)
+        return team["team_id"] if team else None
+
+    db.execute("UPDATE matches SET stage = 'group' WHERE league_name = ?",
+               (config.TI_LEAGUE_NAME,))
+
+    def pair_matches(a: int, b: int, limit: int, after: float | None = None):
+        sql = ("SELECT match_id FROM matches WHERE league_name = ? "
+               "AND ((radiant_id=? AND dire_id=?) OR (radiant_id=? AND dire_id=?))")
+        params: list = [config.TI_LEAGUE_NAME, a, b, b, a]
+        if after is not None:
+            sql += " AND start_time >= ?"
+            params.append(after)
+        sql += " ORDER BY start_time DESC LIMIT ?"
+        params.append(limit)
+        return db.query(sql, params)
+
+    def mark(rows) -> int:
+        db.executemany("UPDATE matches SET stage = 'playoff' WHERE match_id = ?",
+                       [(r["match_id"],) for r in rows])
+        return len(rows)
+
+    playoff, unresolved, live = 0, [], []
+    for s in db.query("SELECT team_a, team_b, score_a, score_b, stage, status "
+                      "FROM ti_schedule"):
+        knockout = any(word in (s["stage"] or "").lower() for word in KNOCKOUT_WORDS)
+        # A series that is being played right now has not been given its bracket
+        # label yet - GosuGamers leaves `stage` as the bare tournament name
+        # until it finishes - so an in-progress series counts as a candidate on
+        # the strength of being in progress.
+        if not knockout and s["status"] != "live":
+            continue
+        a, b = team_id(s["team_a"]), team_id(s["team_b"])
+        if not a or not b:
+            unresolved.append(f"{s['team_a']} vs {s['team_b']}")
+            continue
+        games = (s["score_a"] or 0) + (s["score_b"] or 0)
+        if knockout and games:
+            playoff += mark(pair_matches(a, b, games))
+        else:
+            live.append((a, b))            # no final score to size the series by
+
+    # A series still being played has no score to size it by, so it is resolved
+    # against the clock instead: the knockout starts after the group phase, so
+    # any game this pair has played since the earliest knockout game is part of
+    # it.  Needs the completed series above to have set that reference point.
+    started = db.one("SELECT MIN(start_time) AS t FROM matches "
+                     "WHERE league_name = ? AND stage = 'playoff'",
+                     (config.TI_LEAGUE_NAME,))
+    if live and started and started["t"]:
+        for a, b in live:
+            playoff += mark(pair_matches(a, b, 5, after=started["t"]))
+
+    counts = {r["stage"]: r["n"] for r in db.query(
+        "SELECT stage, COUNT(*) AS n FROM matches WHERE league_name = ? GROUP BY stage",
+        (config.TI_LEAGUE_NAME,))}
+    model.invalidate_cache()
+    return {"playoff": playoff, "counts": counts, "unresolved": unresolved}
 
 
 def resolve_player(slug: str, name: str) -> dict | None:

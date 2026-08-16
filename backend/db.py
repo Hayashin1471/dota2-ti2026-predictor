@@ -204,6 +204,16 @@ MIGRATIONS = {
         # rating run so backtests can score the model without looking ahead.
         "pre_elo_radiant": "REAL",
         "pre_elo_dire": "REAL",
+        # 'group' or 'playoff' for TI matches, NULL elsewhere.  Filled in by
+        # `ingest.label_match_stages` from the GosuGamers bracket.
+        "stage": "TEXT",
+    },
+    "ti_schedule": {
+        # ti_teams slugs, resolved when the fixture is stored.  The sources
+        # spell teams their own way ("BoomBoys" for BetBoom), and the backend
+        # already owns that mapping, so the frontend should not re-guess it.
+        "slug_a": "TEXT",
+        "slug_b": "TEXT",
     },
     "ti_players": {
         # OpenDota account id, filled in once the Liquipedia roster name is

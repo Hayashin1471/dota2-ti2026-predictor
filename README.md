@@ -103,7 +103,8 @@ Nút **Cập nhật dữ liệu** ở góc phải chạy lại phần thu thập
 | Nguồn | Dùng để làm gì | Cách lấy |
 |---|---|---|
 | [Liquipedia](https://liquipedia.net/dota2/The_International/2026) | 16 đội tham dự, đội hình, thể thức, thời gian, patch | MediaWiki API `action=parse`, parse wikitext |
-| [GosuGamers](https://www.gosugamers.net/dota2) | Lịch thi đấu / kết quả / trận đang live của TI 2026 | Scrape HTML |
+| [Liquipedia — Main Event](https://liquipedia.net/dota2/The_International/2026/Main_Event) | Nhánh Main Event: 8 đội, cặp đấu và lịch từng vòng | như trên, parse template `Bracket` |
+| [GosuGamers](https://www.gosugamers.net/dota2) | Kết quả và trận đang live của TI 2026 | Scrape HTML |
 | [hawk.live](https://hawk.live/dota-2/matches/results) | Kho kết quả series đã kết thúc, đánh chỉ mục theo ngày | Scrape HTML |
 | [OpenDota](https://www.opendota.com) | Lịch sử trận pro (thời lượng, thắng thua), rating đội, danh sách + thống kê hero, draft từng trận | REST API công khai |
 
@@ -126,9 +127,9 @@ logit(P_A) = W_team · (R_A − R_B)·ln10/400  +  m_hero · W_hero · Σ Δlogi
              +  W_player · Σ Δlogit(winrate của tuyển thủ trên hero được gán)
 ```
 
-`m_hero` / `m_matchup` là **hiệu chỉnh theo giải**, học từ chính các ván TI 2026 đã đấu. Sau 3 ngày
-TI 2026 cả hai **đang bằng 1** vì không qua được kiểm chứng out-of-sample — công thức hiện chạy đúng
-dạng cũ. Mục 4.3 kể lại đầy đủ chuyện này.
+`m_hero` / `m_matchup` là **hiệu chỉnh theo giải**, fit từ 109 ván vòng bảng TI 2026. Cả hai **đang
+bằng 1** vì không qua được kiểm chứng out-of-sample — công thức hiện chạy đúng dạng cũ. Mục 4.3 kể
+lại đầy đủ chuyện này.
 
 1. **Sức mạnh đội (Elo)** — chạy Elo trên toàn bộ trận pro của 16 đội trong ~21 tháng gần nhất
    (`ELO_HISTORY_DAYS`). Trận càng cũ hệ số K càng nhỏ (half-life 300 ngày); 10 trận đầu của một đội
@@ -238,6 +239,49 @@ dụng".
 **Điều rút ra:** với cỡ mẫu vài chục ván, một hiệu ứng "5 sigma trên giấy" vẫn có thể là nhiễu.
 Shrinkage là chưa đủ; thứ duy nhất đáng tin là kiểm chứng trên dữ liệu chưa thấy.
 
+### Nhãn stage: vòng bảng và nhánh Main Event
+
+TI 2026 chạy Thuỵ Sĩ 16 đội (Round 1–5) rồi các series **Elimination Round** chốt 8 suất vào Main
+Event — tất cả vẫn là **vòng bảng**, 109 ván trong 4 ngày 13–16/8. Nhánh Main Event giữa 8 đội là
+phần đá sau.
+
+Chỗ này dễ đọc nhầm và tôi đã đọc nhầm một lượt: GosuGamers gắn `Main Event - Elimination Round`,
+nghe như đã sang nhánh, nên 12 ván ngày 4 từng bị gắn nhãn `playoff`. hawk.live mới là nguồn đúng —
+nó xếp cả 109 ván dưới một tournament `The International 2026 Group Stage`. Bài học nằm trong
+`KNOCKOUT_WORDS`: `"main event"` không phải từ khoá nhánh (GosuGamers dùng nó cho cả kỳ LAN), và
+`"elimination"` cũng không (đó là vòng loại *trong* giai đoạn Thuỵ Sĩ).
+
+Khi nhánh Main Event bắt đầu, `ingest.label_match_stages` sẽ bắt nó qua các từ upper/lower bracket,
+quarterfinal, semifinal, grand final — và các ván đó thành holdout tiến về phía trước thật sự. Nhãn
+vòng lấy từ trang bracket của Liquipedia, nạp sẵn vào lịch ngay khi cặp đấu được xác định.
+
+### Ước lượng thô hội tụ về "không có gì"
+
+Đây là bằng chứng gọn nhất cho thấy hiệu ứng ban đầu chỉ là nhiễu — theo dõi cùng một con số khi
+vòng bảng đầy dần:
+
+| Dữ liệu | `hero_mult` thô | `duration_shift` thô | se | t |
+|---|---|---|---|---|
+| ngày 1–2 (59 ván) | 0,00 | +0,068 | 0,036 | 1,9 |
+| ngày 1–3 (97 ván) | 0,35 | +0,028 | 0,027 | 1,0 |
+| **ngày 1–4 (109 ván)** | **0,75** | **+0,017** | 0,026 | **0,7** |
+
+`hero_mult` bò từ 0,00 về 0,75 (1,0 = không hiệu chỉnh) và t của thời lượng rơi từ 1,9 xuống 0,7.
+Đúng cái mà một hiệu ứng không tồn tại phải làm khi mẫu lớn dần.
+
+Cổng kiểm chứng trên 109 ván (fit 54 ván cũ, chấm 55 ván mới) vẫn loại cả hai: log-loss 0,6375 →
+0,6483, Brier O/U 0,2604 → 0,2760.
+
+Và kiểm chứng theo thời gian — fit trên 97 ván ngày 1–3, chấm trên 12 ván ngày 4 chưa từng thấy:
+
+| Chấm 12 ván ngày 4 bằng | Log-loss | Độ chính xác | Brier O/U |
+|---|---|---|---|
+| Mô hình trơn (hiệu chỉnh đã bị loại) | **0,6538** | **66,7%** | 0,2998 |
+| Hiệu chỉnh thô ngày 1–3, không shrink không gác cổng | 0,7149 | 50,0% | 0,3181 |
+
+Dòng dưới là đúng thứ phiên bản đầu của `fit_ti_context` sẽ đưa vào chạy: nó biến 66,7% thành tung
+đồng xu.
+
 ### 4.4 Fit trọng số & backtest
 
 `python -m backend evaluate` chấm điểm mô hình trên chính dữ liệu đã tải:
@@ -273,32 +317,33 @@ Vẫn còn một điểm chưa xử lý được: bảng tỉ lệ thắng và b
 
 ### Kết quả đo thực tế
 
-Dataset 2.213 trận (24/5 → 15/8/2026), fit trên 1.659 trận cũ, chấm trên 554 trận mới hơn:
+Dataset 2.655 trận (20/5 → 16/8/2026), fit trên 1.991 trận cũ, chấm trên 664 trận mới hơn:
 
 | Chỉ số | Trọng số đã fit | Trọng số config cũ | Tung đồng xu |
 |---|---|---|---|
-| Log-loss | **0,6219** | 0,6567 | 0,6931 |
-| Độ chính xác | **62,8%** | 60,5% | 50% |
-| Brier | **0,2170** | 0,2326 | 0,25 |
+| Log-loss | **0,6156** | 0,6469 | 0,6931 |
+| Độ chính xác | **64,3%** | 62,1% | 50% |
+| Brier | **0,2140** | 0,2279 | 0,25 |
 
-Trọng số lưu vào DB (fit trên toàn bộ 2.213 trận): `team=0.702`, `hero=1.025`, `matchup=3.0`,
-bias phe Radiant `+0.153`.
+Trọng số lưu vào DB (fit trên toàn bộ 2.655 trận, gồm cả 109 ván TI): `team=0.686`, `hero=1.048`,
+`matchup=3.0`, bias phe Radiant `+0.132`.
 
 **Hiệu chuẩn trên tập test** — cột "dự đoán" và "thực tế" bám nhau khá sát, nghĩa là con số %
 mà app đưa ra có ý nghĩa thật chứ không chỉ là thứ tự hơn kém:
 
 | Khoảng dự đoán | Số trận | App dự đoán | Thực tế |
 |---|---|---|---|
-| 0–20% | 6 | 17,0% | 0,0% |
-| 20–40% | 86 | 32,1% | 27,9% |
-| 40–60% | 242 | 50,2% | 47,5% |
-| 60–80% | 193 | 68,0% | 68,4% |
-| 80–100% | 27 | 83,6% | 92,6% |
+| 0–20% | 8 | 16,2% | 0,0% |
+| 20–40% | 112 | 32,6% | 22,3% |
+| 40–60% | 301 | 50,7% | 46,8% |
+| 60–80% | 213 | 68,5% | 68,5% |
+| 80–100% | 30 | 83,2% | 90,0% |
 
-**O/U vẫn là điểm yếu nhất.** Trên tập test độ chính xác 55,8% trong khi tỉ lệ over thực tế là
-55,2% — mô hình gần như chỉ đang đoán theo xu hướng chung. Trên 97 ván TI thì 63,9% với tỉ lệ over
-thực tế 64,9%, cũng vậy. Hướng sửa từng có vẻ hứa hẹn (`duration_shift`) đã bị chính kiểm chứng của
-nó loại — xem mục 4.3. Phần thắng/thua đáng tin hơn hẳn phần thời lượng.
+**O/U vẫn là điểm yếu nhất.** Trên tập test độ chính xác 54,5% trong khi tỉ lệ over thực tế là
+53,9% — mô hình gần như chỉ đang đoán theo xu hướng chung. Riêng 12 ván cuối vòng bảng (ngày 4) chỉ
+đúng 25%, vì chúng ngắn bất thường (33,3% vượt mốc 41′) trong khi mô hình vẫn nghiêng OVER theo mặt
+bằng ba ngày trước. Hướng sửa từng có vẻ hứa hẹn (`duration_shift`) đã bị chính kiểm chứng của nó
+loại — xem mục 4.3. Phần thắng/thua đáng tin hơn hẳn phần thời lượng.
 
 **Còn thứ đã thử và không dùng** (ghi lại để khỏi thử lại):
 
@@ -316,8 +361,11 @@ nó loại — xem mục 4.3. Phần thắng/thua đáng tin hơn hẳn phần t
 ### 4.5 Giới hạn cần biết
 
 - **Hiệu chỉnh riêng cho TI hiện đang tắt** vì không qua kiểm chứng (mục 4.3). Sau mỗi ngày thi đấu
-  nên chạy lại `refresh history` + `refresh drafts` rồi `evaluate --apply`: nếu hiệu ứng trở thành
-  thật ở vòng playoff, cổng kiểm chứng sẽ tự bật nó lên.
+  nên chạy lại `refresh core` + `refresh history` + `refresh drafts` rồi `evaluate --apply`: nếu
+  hiệu ứng trở thành thật, cổng kiểm chứng sẽ tự bật nó lên.
+- **Hiệu chỉnh fit trên vòng bảng nhưng lúc dự đoán sẽ áp cho cả nhánh Main Event.** Nhánh loại
+  trực tiếp giữa 8 đội mạnh nhất không nhất thiết giống vòng bảng 16 đội, nên nếu về sau cổng kiểm
+  chứng bật hiệu chỉnh lên thì đây là chỗ cần xem lại. Hiện chưa có ván nhánh nào để fit riêng.
 - **Đừng tin một hiệu ứng chỉ mới thấy trên vài chục ván.** Sau ngày 1–2, `hero_mult` fit ra 0,50
   với bootstrap 89% ủng hộ; ngày 3 đảo ngược và bootstrap về 2,7%. Mọi con số trong mục 4.3 nên đọc
   kèm câu này.
@@ -492,6 +540,7 @@ data/
 | `run.bat` báo không tìm thấy Python | Cài Python 3.10+ và tick "Add python.exe to PATH" khi cài. |
 | Cổng 8000 đã bị chiếm | Chạy `python -m backend serve --port 8090` rồi mở `127.0.0.1:8090`. |
 | File database phình to | `python -m backend compact` |
+| Lịch sử kết quả thiếu ngày hôm nay / hôm qua | Bấm **Cập nhật dữ liệu** (nút này chạy cả phase `results`). Trang theo ngày của hawk.live chỉ được cache lâu khi ngày đó đã qua từ 2 hôm trở lên, nên hôm nay và hôm qua luôn được tải lại. |
 
 Muốn chỉnh mô hình thì sửa các hằng số ở đầu `backend/config.py` (`W_HERO_WINRATE`, `W_MATCHUP`,
 `ELO_K`, `DURATION_WINDOWS`, `OVER_UNDER_LINE_MIN`, …). Riêng phần hiệu chỉnh theo giải có nhóm

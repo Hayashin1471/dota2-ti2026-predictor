@@ -24,6 +24,9 @@ BROWSER_UA = (
 # --- Endpoints ------------------------------------------------------------
 LIQUIPEDIA_API = "https://liquipedia.net/dota2/api.php"
 LIQUIPEDIA_PAGE = "The_International/2026"
+# The knockout bracket lives on its own page; GosuGamers does not publish the
+# upcoming Main Event pairings, only what has already been played.
+LIQUIPEDIA_MAIN_EVENT_PAGE = "The_International/2026/Main_Event"
 GOSU_BASE = "https://www.gosugamers.net"
 GOSU_TI_SLUG_HINT = "the-international-2026"
 OPENDOTA_API = "https://api.opendota.com/api"

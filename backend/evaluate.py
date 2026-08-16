@@ -38,7 +38,7 @@ def build_dataset(min_start: float | None = None, max_start: float | None = None
     """One row per pro match with the three model features and the outcome."""
     table = model.hero_table()
 
-    sql = ("SELECT match_id, start_time, duration, radiant_win, league_name, "
+    sql = ("SELECT match_id, start_time, duration, radiant_win, league_name, stage, "
            "radiant_id, dire_id, pre_elo_radiant, pre_elo_dire FROM matches "
            "WHERE duration BETWEEN ? AND ? AND radiant_win IS NOT NULL "
            "AND pre_elo_radiant IS NOT NULL AND pre_elo_dire IS NOT NULL")
@@ -98,6 +98,7 @@ def build_dataset(min_start: float | None = None, max_start: float | None = None
             "duration": r["duration"],
             "y": 1.0 if r["radiant_win"] else 0.0,
             "league": r["league_name"],
+            "stage": r["stage"],
             "x_team": x_team,
             "x_hero": x_hero,
             "x_matchup": x_match,
@@ -415,10 +416,18 @@ def run(test_fraction: float = 0.25, apply: bool = False,
                   "x_matchup": config.W_MATCHUP}
 
     ti_rows = [r for r in rows if is_ti(r)]
+    # Fit the TI corrections on the **group stage** only.  The group phase is a
+    # round-robin among all sixteen teams; the bracket that follows is knockout
+    # between survivors, which is a different thing being measured.  Keeping the
+    # bracket out of the fit also leaves it as a forward test - the one slice of
+    # TI the corrections have genuinely never seen.
+    group_rows = [r for r in ti_rows if r["stage"] != "playoff"]
+    playoff_rows = [r for r in ti_rows if r["stage"] == "playoff"]
+
     # The corrections are fitted with the split weights, so the numbers reported
     # for them are not scored by a model that has already seen the test slice.
-    context = fit_ti_context(ti_rows, w, bias)
-    context_full = fit_ti_context(ti_rows, w_full, bias_full)
+    context = fit_ti_context(group_rows, w, bias)
+    context_full = fit_ti_context(group_rows, w_full, bias_full)
 
     result = {
         "dataset": {
@@ -426,6 +435,8 @@ def run(test_fraction: float = 0.25, apply: bool = False,
             "train": len(train),
             "test": len(test),
             "ti_matches": len(ti_rows),
+            "ti_group": len(group_rows),
+            "ti_playoff": len(playoff_rows),
             "from": time.strftime("%Y-%m-%d", time.localtime(rows[0]["start_time"])),
             "to": time.strftime("%Y-%m-%d", time.localtime(rows[-1]["start_time"])),
         },
@@ -448,22 +459,40 @@ def run(test_fraction: float = 0.25, apply: bool = False,
         "calibration_test": calibration(test, w, bias),
     }
 
-    # --- what the TI corrections are worth, on the TI games themselves -----
-    if ti_rows:
+    # --- what the TI corrections are worth, on the games they were fitted on --
+    if group_rows:
         result["ti_context_effect"] = {
-            "matches": len(ti_rows),
-            "without_context": score(ti_rows, w, bias),
-            "with_context": score(ti_rows, w, bias, context=context),
+            "matches": len(group_rows),
+            "stage": "group",
+            "without_context": score(group_rows, w, bias),
+            "with_context": score(group_rows, w, bias, context=context),
             "non_ti_unaffected": True,
-            "note": "In-sample for the two corrections: they were fitted on "
-                    "these very games.  The shrinkage in `fit_ti_context` is "
-                    "what keeps that from becoming an overfit; treat the gain "
-                    "as an upper bound until more TI games are played.",
+            "note": "In-sample for the corrections: they were fitted on these "
+                    "very games, so this is an upper bound, not a measurement.",
         }
 
         # The gate that decided whether any of this ships, reported verbatim.
         if context.get("validation"):
             result["ti_context_holdout"] = context["validation"]
+
+    # --- the bracket: never fitted on, so this one really is a forward test --
+    if playoff_rows:
+        raw_ctx = {"hero_mult": context["raw"]["hero_mult"],
+                   "matchup_mult": context["raw"]["matchup_mult"],
+                   "duration_shift": context["raw"]["duration_resid"]} \
+            if context.get("raw") else None
+        result["playoff_forward_test"] = {
+            "matches": len(playoff_rows),
+            "plain_model": score(playoff_rows, w, bias),
+            "with_group_context": score(playoff_rows, w, bias, context=context),
+            # what the model would have done had the raw group-stage fit been
+            # shipped unshrunk and ungated - the mistake this file now prevents
+            "with_raw_group_fit": score(playoff_rows, w, bias, context=raw_ctx)
+            if raw_ctx else None,
+            "note": "The bracket is knockout between the surviving teams, so it "
+                    "is not a random sample of TI either; a dozen games is an "
+                    "anecdote. Read it as a sanity check, not a verdict.",
+        }
 
     # a named slice scored as a held-out sample (never trained on)
     if today_only_start:
