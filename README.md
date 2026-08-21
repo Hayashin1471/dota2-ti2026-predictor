@@ -82,8 +82,16 @@ Mở http://127.0.0.1:8000
    *số trận và tỉ lệ thắng của từng tuyển thủ trên đúng hero đó* — tiện để xem ai mới là người quen
    tay với hero này.
 4. Đổi mốc over/under nếu muốn (mặc định 41 phút).
-5. Bấm **DỰ ĐOÁN**.
-6. Bấm vào một trận trong "Lịch thi đấu TI 2026" để nạp nhanh 2 đội của trận đó.
+5. Chọn **thể thức**: `BO1` cho một ván lẻ, `BO3` / `BO5` cho một loạt đấu. Toàn bộ nhánh Main Event
+   là Bo3 và chung kết là Bo5, nên từ 20/8 trở đi gần như lúc nào cũng nên để BO3. Chọn BO3/BO5 sẽ
+   hiện thêm ô **tỉ số hiện tại** — nhập 1–0 nếu loạt đang đá dở, app sẽ tính lại cả xác suất ván
+   sắp tới lẫn xác suất cả loạt.
+6. Bấm **DỰ ĐOÁN**.
+7. Bấm vào một trận trong "Lịch thi đấu TI 2026" để nạp nhanh 2 đội của trận đó.
+
+Với BO3/BO5, kết quả có thêm thẻ **Kết quả loạt đấu**: xác suất thắng chuỗi của mỗi đội, phân bố
+tỉ số (2–0 / 2–1 / …), số ván còn lại dự kiến và tổng thời lượng dự kiến của cả loạt. Thẻ *Dự đoán
+thắng thua* phía trên vẫn là xác suất của **ván sắp tới**, không phải của cả loạt.
 
 Mục **Lịch sử kết quả** có 3 tab:
 
@@ -125,6 +133,7 @@ Bốn tín hiệu được cộng trên thang **log-odds**:
 logit(P_A) = W_team · (R_A − R_B)·ln10/400  +  m_hero · W_hero · Σ Δlogit(winrate)
              +  m_matchup · W_matchup · Δ khắc chế
              +  W_player · Σ Δlogit(winrate của tuyển thủ trên hero được gán)
+             +  W_series · (số ván A đã thắng trong chuỗi − số ván B đã thắng)
 ```
 
 `m_hero` / `m_matchup` là **hiệu chỉnh theo giải**, fit từ 109 ván vòng bảng TI 2026. Cả hai **đang
@@ -144,6 +153,9 @@ lại đầy đủ chuyện này.
    thắng chung của chính họ**. Lấy con số thô sẽ chủ yếu đo lại "đội này mạnh", mà mục 1 đã đo rồi;
    phần dư ra chính là độ thuần thục hero. Ví dụ Yatoro có winrate chung 53% nhưng Morphling 60%
    (1.854 trận) → +0.279 log-odds, gần chạm trần `PLAYER_EDGE_CAP`.
+
+5. **Thế dẫn trong chuỗi** — chỉ có tác dụng khi ván đang hỏi là ván thứ hai trở đi của một Bo3/Bo5.
+   Đội đang dẫn thắng ván tiếp theo nhiều hơn mức rating của nó nói. Xem mục 4.5.
 
 Tổng đóng góp của draft bị chặn ở `DRAFT_LOGIT_CAP` để đội hình không lấn át sức mạnh đội, và số
 hạng tuyển thủ bị chặn riêng ở `PLAYER_LOGIT_CAP`.
@@ -317,27 +329,33 @@ Vẫn còn một điểm chưa xử lý được: bảng tỉ lệ thắng và b
 
 ### Kết quả đo thực tế
 
-Dataset 2.655 trận (20/5 → 16/8/2026), fit trên 1.991 trận cũ, chấm trên 664 trận mới hơn:
+Dataset 2.779 trận (15/5 → 20/8/2026, đã gồm 10 ván Main Event ngày 1), fit trên 2.084 trận cũ,
+chấm trên 695 trận mới hơn:
 
 | Chỉ số | Trọng số đã fit | Trọng số config cũ | Tung đồng xu |
 |---|---|---|---|
-| Log-loss | **0,6156** | 0,6469 | 0,6931 |
-| Độ chính xác | **64,3%** | 62,1% | 50% |
-| Brier | **0,2140** | 0,2279 | 0,25 |
+| Log-loss | **0,6108** | 0,6481 | 0,6931 |
+| Độ chính xác | **66,0%** | 61,6% | 50% |
+| Brier | **0,2118** | 0,2285 | 0,25 |
 
-Trọng số lưu vào DB (fit trên toàn bộ 2.655 trận, gồm cả 109 ván TI): `team=0.686`, `hero=1.048`,
-`matchup=3.0`, bias phe Radiant `+0.132`.
+Trọng số lưu vào DB (fit trên toàn bộ 2.779 trận, gồm cả 119 ván TI): `team=0.719`, `hero=0.971`,
+`matchup=3.0`, bias phe Radiant `+0.130`. Hệ số chuỗi `series=0.192` (mục 4.5).
+
+`matchup=3.0` đang **chạm trần cứng** trong `fit_weights`. Nghĩa là hàm likelihood còn muốn đẩy nó
+cao hơn nữa, và trần đó — chứ không phải dữ liệu — mới là thứ quyết định con số. Không sửa vội: số
+hạng khắc chế đã được chuẩn hoá về "mỗi hero" nên trọng số lớn không tự nó vô lý, nhưng nó là một
+điểm cần để mắt chứ không phải một kết quả fit sạch.
 
 **Hiệu chuẩn trên tập test** — cột "dự đoán" và "thực tế" bám nhau khá sát, nghĩa là con số %
 mà app đưa ra có ý nghĩa thật chứ không chỉ là thứ tự hơn kém:
 
 | Khoảng dự đoán | Số trận | App dự đoán | Thực tế |
 |---|---|---|---|
-| 0–20% | 8 | 16,2% | 0,0% |
-| 20–40% | 112 | 32,6% | 22,3% |
-| 40–60% | 301 | 50,7% | 46,8% |
-| 60–80% | 213 | 68,5% | 68,5% |
-| 80–100% | 30 | 83,2% | 90,0% |
+| 0–20% | 8 | 16,1% | 0,0% |
+| 20–40% | 122 | 32,4% | 20,5% |
+| 40–60% | 300 | 50,2% | 47,0% |
+| 60–80% | 231 | 68,4% | 68,4% |
+| 80–100% | 34 | 83,2% | 88,2% |
 
 **O/U vẫn là điểm yếu nhất.** Trên tập test độ chính xác 54,5% trong khi tỉ lệ over thực tế là
 53,9% — mô hình gần như chỉ đang đoán theo xu hướng chung. Riêng 12 ván cuối vòng bảng (ngày 4) chỉ
@@ -356,9 +374,68 @@ loại — xem mục 4.3. Phần thắng/thua đáng tin hơn hẳn phần thờ
   (K=28, half-life 300, 640 ngày) đạt 0,6622 — đã đủ tốt, không đổi.
 - *Nhân một hệ số nhiệt độ lên toàn bộ logit ở TI* (kiểu Platt scaling): fit trên ngày 1 cho hệ số
   1,5 nhưng chấm trên ngày 2 lại **tệ hơn** để nguyên. Không dùng — cái sai không nằm ở độ tự tin
-  tổng thể mà nằm ở riêng số hạng hero.
+  tổng thể mà nằm ở riêng số hạng hero. Thử lại sau Main Event ngày 1 trên cả 119 ván TI: hệ số tốt
+  nhất là 1,0–1,2 trên cả pro nói chung lẫn vòng bảng TI, tức mô hình vốn đã hiệu chuẩn đúng và
+  không có gì để scale.
+- *Thêm một Elo "phong độ gần đây" bên cạnh Elo dài hạn* (half-life 30/45/120 ngày, K 28–40, đưa
+  vào thành số hạng thứ tư): log-loss tập test 0,6107 → 0,6099. Chênh lệch ở mức nhiễu, và trọng số
+  Elo dài hạn bị chia đôi để nhường chỗ. Elo hiện tại đã tự hạ K theo tuổi trận nên nó đang làm
+  đúng việc này rồi; không thêm knob.
 
-### 4.5 Giới hạn cần biết
+### 4.5 Loạt đấu Bo3/Bo5 — câu hỏi mà Main Event thật sự hỏi
+
+Vòng bảng đá Bo2, nhưng **toàn bộ nhánh Main Event là Bo3, chung kết là Bo5**. Từ ngày 20/8 trở đi,
+"đội nào thắng ván này" chỉ là nửa câu trả lời — cái người xem cần là "đội nào qua được vòng này".
+Hai câu hỏi cho hai con số khác nhau: một đội hơn 55% ở một ván là 57,5% ở một Bo3, và 59,3% ở Bo5.
+
+App có nút chọn **BO1 / BO3 / BO5** ngay dưới nút Dự đoán, kèm ô nhập **tỉ số hiện tại** cho loạt
+đang đá dở. Kết quả trả về thêm một thẻ *Kết quả loạt đấu*: xác suất thắng chuỗi, **phân bố tỉ số**
+(2–0 / 2–1 / 1–2 / 0–2), số ván dự kiến và tổng thời lượng dự kiến của cả loạt.
+
+**Các ván trong một chuỗi không độc lập nhau.** Dựng lại chuỗi từ log trận (cùng cặp đội, cùng giải,
+hai ván cách nhau dưới `SERIES_MAX_GAP` = 3 giờ) rồi đo trên **3.259 ván** đá ở thế tỉ số lệch:
+
+| | Kỳ vọng theo Elo | Thực tế |
+|---|---|---|
+| Đội thắng ván 1 thắng luôn ván 2 | 56,4% | **60,1%** (n = 2.373) |
+| Đội đang dẫn 1–0 thắng ván sau | 55,8% | **61,1%** (n = 1.197) |
+| Đội đang bị dẫn 0–1 thắng ván sau | 43,1% | **40,7%** (n = 1.225) |
+
+Elo tự nó đã ăn được khoảng một nửa hiệu ứng — nó cập nhật sau **từng ván**, nên thắng một ván đã
+đẩy rating lên ~0,14 log-odds trước ván sau. Phần **còn dư** sau khi trừ hết đi là số hạng mới:
+
+```
+W_series = +0.192 log-odds mỗi ván dẫn trước
+```
+
+Fit bằng max-likelihood trên 1.054 ván có draft ở thế tỉ số lệch, shrink về 0 với
+`SERIES_MOMENTUM_PRIOR = 400` ván giả định (thô 0,265 → dùng 0,192), rồi **phải qua kiểm chứng
+out-of-sample** đúng như trọng số chính: fit trên phần cũ, chấm trên 317 ván mới hơn — log-loss
+0,6064 → **0,5994**, qua. Nếu một lần chạy sau nó trượt, hệ số tự về 0 và các ván lại được coi là
+độc lập.
+
+**Một điểm phải nói thẳng:** trên chính dữ liệu TI 2026 (48 ván) hiệu ứng này **không** cải thiện gì
+— log-loss 0,614 → 0,6185. Số hạng vẫn được dùng, vì 48 ván không đủ để lật 3.259 ván, nhưng
+`evaluate` in riêng lát cắt TI ra (`series_momentum.ti_slice`) để chuyện đó không bị giấu đi. Đây
+khác hẳn với `hero_mult` ở mục 4.3: cái đó là hiệu chỉnh *của riêng TI*, chỉ có dữ liệu TI để dựa
+vào, nên dữ liệu TI có quyền phủ quyết nó.
+
+**Đo ở cấp chuỗi, không phải cấp ván.** `evaluate` chấm luôn dự đoán chuỗi *đưa ra trước ván đầu
+tiên* — thông tin duy nhất mà một dự đoán nhánh từng có:
+
+| Lát cắt | Số chuỗi | Log-loss | Độ chính xác |
+|---|---|---|---|
+| Tập test (pro nói chung) | 256 | 0,6372 | 65,6% |
+| Vòng bảng TI 2026 | 44 | 0,6635 | 56,8% |
+| **Main Event ngày 1** | **4** | **0,4617** | **75%** |
+
+Ngày 1 nhánh: đúng Spirit thắng Iron Wing (dự đoán chuỗi 75,1%), đúng VISION thắng BoomBoys (64,3%),
+đúng Yandex thắng Liquid (87,8% cho Yandex), **sai Falcons thua Nigma** (mô hình cho Falcons 62,8%).
+Bốn chuỗi là một giai thoại chứ không phải một phép đo — nhưng đáng chú ý là ở **cấp ván** cùng ngày
+đó mô hình chỉ đúng 6/10 với log-loss 0,7115, tệ hơn tung đồng xu. Gộp ván lại thành chuỗi lọc bớt
+nhiễu, và đó chính là lý do thẻ chuỗi tồn tại.
+
+### 4.6 Giới hạn cần biết
 
 - **Hiệu chỉnh riêng cho TI hiện đang tắt** vì không qua kiểm chứng (mục 4.3). Sau mỗi ngày thi đấu
   nên chạy lại `refresh core` + `refresh history` + `refresh drafts` rồi `evaluate --apply`: nếu
@@ -490,7 +567,7 @@ bị cổng kiểm chứng loại.
 | `GET /api/players/{account_id}/heroes` | các hero một tuyển thủ chơi nhiều nhất |
 | `GET /api/schedule` | lịch thi đấu từ GosuGamers |
 | `GET /api/results` | `?scope=ti\|all\|teams` — lịch sử kết quả; `scope=teams` cần thêm `team_a`, `team_b` |
-| `POST /api/predict` | `{team_a, team_b, heroes_a[], heroes_b[], players_a[], players_b[], line_minutes}` |
+| `POST /api/predict` | `{team_a, team_b, heroes_a[], heroes_b[], players_a[], players_b[], line_minutes, best_of, series_a, series_b}` |
 | `POST /api/refresh` | `{phase: core\|history\|players\|drafts\|results\|all, draft_limit}` |
 | `GET /api/refresh/status` | tiến độ job đang chạy |
 
@@ -500,10 +577,23 @@ bị cổng kiểm chứng loại.
 Response của `/api/predict` có thêm `factors.ti_context` (hiệu chỉnh theo giải đang áp) và
 `factors.duration_terms.ti_context_log` (phần Δ_TI cộng vào thời lượng).
 
+`best_of` nhận 1, 3 hoặc 5 (mặc định 1 — một ván lẻ, đúng như trước). Với `best_of > 1`, response có
+thêm khối `series`: `p_series`, `scorelines[]`, `expected_maps`, `p_over_maps` và
+`expected_total_minutes`. `series_a` / `series_b` là số ván **đã thắng** của loạt đang đá dở; nhập
+một tỉ số đã kết thúc loạt (2 trong Bo3) sẽ bị từ chối với lỗi 400. Lúc đó `win_probability` vẫn là
+xác suất của **ván sắp tới** — đã cộng thế dẫn — còn `series.p_map_level` là xác suất một ván khi tỉ
+số đang hoà, tức đầu vào của phép tính chuỗi.
+
 Ví dụ:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/predict -H "Content-Type: application/json" -d "{\"team_a\":\"team-spirit\",\"team_b\":\"team-falcons\",\"heroes_a\":[10,13],\"heroes_b\":[1,17],\"players_a\":[321580662,106305042],\"players_b\":[null,null],\"line_minutes\":41}"
+```
+
+Một Bo3 đang dẫn 1–0:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/predict -H "Content-Type: application/json" -d "{\"team_a\":\"team-spirit\",\"team_b\":\"team-vision\",\"best_of\":3,\"series_a\":1,\"series_b\":0}"
 ```
 
 ## 7. Cấu trúc
@@ -516,7 +606,8 @@ backend/
   matching.py          khớp tên đội giữa các nguồn
   sources/             liquipedia.py · gosugamers.py · hawk.py · opendota.py
   ingest.py            thu thập theo từng phase
-  model.py             Elo, draft, tuyển thủ-hero, mô hình thời lượng
+  model.py             Elo, draft, tuyển thủ-hero, mô hình thời lượng, phép tính Bo3/Bo5
+  evaluate.py          backtest, fit trọng số, hiệu chỉnh giải, hệ số chuỗi
   app.py               FastAPI
   __main__.py          CLI
 frontend/

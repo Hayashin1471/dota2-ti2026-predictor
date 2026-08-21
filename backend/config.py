@@ -91,6 +91,30 @@ DURATION_PRIOR_GAMES = 120
 
 DEFAULT_DRAFT_SAMPLE = 600   # pro matches to pull picks/duration for by default
 
+# --- Series (Bo3 / Bo5) ---------------------------------------------------
+# The main event is a best-of-3 bracket with a best-of-5 final, so the question
+# it actually asks is who takes the *series*, and a per-map number only answers
+# half of it.  Maps inside one series are not independent either: the side that
+# is already up a map wins the next one more often than its rating alone says.
+# `evaluate.fit_series_momentum` measures that carry-over on every multi-map
+# series in the database and gates it out of sample; the value below is only the
+# fallback until that has run.
+#
+# It is worth being clear about what the measurement does and does not cover.
+# Across ~3,300 pro maps the carry-over is solidly positive and it survives a
+# time-split check.  On TI 2026's own games - 65 group maps and main-event day
+# one - it does not help.  Sixty-five games cannot overturn three thousand, so
+# the term ships, but `evaluate` reports the TI slice separately and the number
+# below stays small on purpose.
+W_SERIES_MOMENTUM = 0.15      # log-odds per map of series lead
+SERIES_MOMENTUM_CAP = 0.45    # anything larger is noise, not carry-over
+SERIES_MOMENTUM_PRIOR = 400   # pseudo-maps pulling the fitted value toward 0
+# Two games belong to the same series if the same pair starts them this close
+# together in the same league.  Dota series are played back to back; a three
+# hour gap covers a long game plus the break without swallowing the next round.
+SERIES_MAX_GAP = 3 * 60 * 60
+SERIES_FORMATS = {1: "Bo1", 3: "Bo3", 5: "Bo5"}
+
 # --- Tournament context ---------------------------------------------------
 # A TI game might not be an average pro game: both sides are elite, so a hero's
 # public win rate may say less about who wins the draft, and the games may run

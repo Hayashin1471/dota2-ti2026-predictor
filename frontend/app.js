@@ -30,6 +30,9 @@ const state = {
   modal: { side: null, slot: null, attr: '*', q: '' },
   playerModal: { side: null, slot: null },
   historyScope: 'ti',
+  // the main event is a Bo3 bracket, so the app has to be able to ask about a
+  // series and about a series already in progress
+  series: { bestOf: 1, a: 0, b: 0 },
   lastResult: null,
 };
 
@@ -647,6 +650,9 @@ async function predict() {
         players_a: pa.players,
         players_b: pb.players,
         line_minutes: parseFloat($('line-input').value) || 41,
+        best_of: state.series.bestOf,
+        series_a: state.series.a,
+        series_b: state.series.b,
       }),
     });
     state.lastResult = result;
@@ -658,6 +664,54 @@ async function predict() {
     btn.disabled = false;
     label.textContent = 'DỰ ĐOÁN';
   }
+}
+
+/* A Bo3 is not just "the map probability, three times".  Winning one map makes
+   the next one likelier, and the series can end in two maps or three, so the
+   scoreline distribution says more than the headline number does. */
+function renderSeries(r, nameA, nameB) {
+  const card = $('card-series');
+  const s = r.series;
+  if (!s) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+
+  const played = s.score_so_far.a + s.score_so_far.b;
+  $('series-format').textContent = played
+    ? `BO${s.best_of} · ĐANG ${s.score_so_far.a}—${s.score_so_far.b}`
+    : `BO${s.best_of}`;
+
+  const pa = s.p_series.a, pb = s.p_series.b;
+  $('series-fill-a').style.width = `${pa * 100}%`;
+  $('series-fill-b').style.width = `${pb * 100}%`;
+  $('series-pct-a').textContent = fmtPct(pa);
+  $('series-pct-b').textContent = fmtPct(pb);
+  $('series-name-a').textContent = nameA;
+  $('series-name-b').textContent = nameB;
+
+  const top = Math.max(...s.scorelines.map((x) => x.p));
+  $('scorelines').innerHTML = s.scorelines.map((x) => {
+    const who = x.winner === 'a' ? nameA : nameB;
+    const cls = x.winner === 'a' ? 'a' : 'b';
+    return `
+      <div class="sl-row">
+        <span class="sl-score ${cls}">${x.a}—${x.b}</span>
+        <div class="sl-track"><div class="sl-bar ${cls}" style="width:${(x.p / top) * 100}%"></div></div>
+        <span class="sl-pct">${fmtPct(x.p)}</span>
+        <span class="sl-who">${escapeHtml(who)}</span>
+      </div>`;
+  }).join('');
+
+  const m = r.factors.series_momentum || { logit: 0, per_map: 0 };
+  const overLabel = s.total_maps_line !== null
+    ? `· ${s.best_of} ván trọn vẹn ${fmtPct(s.p_over_maps)} `
+    : '';
+  $('series-note').textContent =
+    `Từ tỉ lệ thắng một ván ${fmtPct(s.p_map_level)} khi tỉ số đang hoà. ` +
+    `Dự kiến còn ${s.maps_remaining} ván ${overLabel}` +
+    `· tổng thời lượng ~${s.expected_total_minutes}′. ` +
+    (m.per_map
+      ? `Quán tính chuỗi: mỗi ván dẫn trước cộng ${m.per_map.toFixed(2)} log-odds.`
+      : 'Các ván được coi là độc lập với nhau.');
 }
 
 function renderResult(r) {
@@ -683,11 +737,17 @@ function renderResult(r) {
   const margin = favP >= 0.65 ? 'chênh lệch rõ rệt'
                : favP >= 0.56 ? 'nhỉnh hơn'
                : 'gần như cân bằng';
+  const mom = r.factors.series_momentum || { lead: 0, logit: 0 };
   $('verdict').innerHTML =
-    `<b>${escapeHtml(fav)}</b> được đánh giá cao hơn (${fmtPct(favP)}) — ${margin}. ` +
+    `<b>${escapeHtml(fav)}</b> được đánh giá cao hơn (${fmtPct(favP)}) — ${margin}` +
+    (r.series ? ' <i>cho ván sắp tới</i>' : '') + '. ' +
     `Sức mạnh đội đóng góp ${signed(r.factors.team_strength.logit)} log-odds, ` +
     `đội hình đóng góp ${signed(r.factors.draft_total_logit)}, ` +
-    `tuyển thủ với hero ${signed(r.factors.player_heroes.logit)}.`;
+    `tuyển thủ với hero ${signed(r.factors.player_heroes.logit)}` +
+    (mom.lead ? `, thế dẫn trong chuỗi ${signed(mom.logit)}` : '') + '.';
+
+  /* --- the series, when one was asked about --- */
+  renderSeries(r, nameA, nameB);
 
   /* --- over / under --- */
   const d = r.duration;
@@ -726,6 +786,13 @@ function renderResult(r) {
         ? `${f.player_heroes.assigned} tuyển thủ được gán hero, so với tỉ lệ thắng chung của chính họ`
         : 'chưa gán tuyển thủ nào cho hero' },
   ];
+  if (f.series_momentum && f.series_momentum.lead) {
+    rows.push({
+      label: 'Thế dẫn trong chuỗi', value: f.series_momentum.logit,
+      hint: `đang dẫn ${Math.abs(f.series_momentum.lead)} ván — đo trên các series pro `
+          + `đã đấu, ${f.series_momentum.per_map.toFixed(2)} log-odds mỗi ván dẫn trước`,
+    });
+  }
   const scale = Math.max(0.35, ...rows.map((x) => Math.abs(x.value)));
   $('factors').innerHTML = rows.map((row) => {
     const w = Math.min(50, (Math.abs(row.value) / scale) * 50);
@@ -880,6 +947,34 @@ function pollRefresh() {
 /* =========================================================================
    Events
    ========================================================================= */
+/* ---------- series format ---------- */
+/* Bo1 is a single map and has no score to carry; anything longer does, and the
+   maps already won change both who is favoured for the next one and what the
+   series is worth. */
+function setBestOf(bestOf) {
+  state.series.bestOf = bestOf;
+  state.series.a = 0;
+  state.series.b = 0;
+  for (const b of $('bo-switch').children) {
+    b.classList.toggle('active', parseInt(b.dataset.bo, 10) === bestOf);
+  }
+  $('series-score').classList.toggle('hidden', bestOf === 1);
+  renderSeriesScore();
+}
+
+function bumpSeriesScore(side, step) {
+  const need = Math.floor(state.series.bestOf / 2);   // one short of clinching
+  const next = state.series[side] + step;
+  if (next < 0 || next > need) return;
+  state.series[side] = next;
+  renderSeriesScore();
+}
+
+function renderSeriesScore() {
+  $('ss-a').textContent = state.series.a;
+  $('ss-b').textContent = state.series.b;
+}
+
 function wireEvents() {
   for (const side of ['a', 'b']) {
     $(`team-btn-${side}`).addEventListener('click', (e) => {
@@ -900,11 +995,19 @@ function wireEvents() {
   }
   document.addEventListener('click', closeMenus);
 
+  for (const b of $('bo-switch').children) {
+    b.addEventListener('click', () => setBestOf(parseInt(b.dataset.bo, 10)));
+  }
+  for (const b of document.querySelectorAll('.ss-btn')) {
+    b.addEventListener('click', () => bumpSeriesScore(b.dataset.side, parseInt(b.dataset.step, 10)));
+  }
+
   $('btn-predict').addEventListener('click', predict);
   $('btn-refresh').addEventListener('click', startRefresh);
   $('btn-cancel').addEventListener('click', () => api('/api/refresh/cancel', { method: 'POST' }));
   $('btn-clear').addEventListener('click', () => {
     state.pick = { a: emptySide(), b: emptySide() };
+    setBestOf(1);
     renderSide('a'); renderSide('b'); syncMenuDisabled(); updatePredictButton();
     $('result').classList.add('hidden');
   });

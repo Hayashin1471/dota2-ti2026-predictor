@@ -298,6 +298,12 @@ class PredictRequest(BaseModel):
     players_a: list[int | None] = Field(default_factory=list, max_length=5)
     players_b: list[int | None] = Field(default_factory=list, max_length=5)
     line_minutes: float = config.OVER_UNDER_LINE_MIN
+    # The main event is a Bo3 bracket with a Bo5 final, so the app has to be
+    # able to answer the series question, not only the map one.  `best_of = 1`
+    # keeps the old behaviour for anyone asking about a single game.
+    best_of: int = Field(1, description="1, 3 or 5")
+    series_a: int = Field(0, ge=0, le=3, description="maps team A has already won")
+    series_b: int = Field(0, ge=0, le=3, description="maps team B has already won")
 
 
 def _team_row(slug: str) -> dict:
@@ -312,6 +318,14 @@ def _team_row(slug: str) -> dict:
 def api_predict(req: PredictRequest):
     if req.team_a == req.team_b:
         raise HTTPException(status_code=400, detail="pick two different teams")
+    if req.best_of not in config.SERIES_FORMATS:
+        raise HTTPException(status_code=400, detail="best_of must be 1, 3 or 5")
+    need = req.best_of // 2 + 1
+    if req.series_a >= need or req.series_b >= need:
+        raise HTTPException(
+            status_code=400,
+            detail=f"series is already over at {req.series_a}-{req.series_b} in a "
+                   f"Bo{req.best_of}")
 
     a, b = _team_row(req.team_a), _team_row(req.team_b)
 
@@ -355,7 +369,8 @@ def api_predict(req: PredictRequest):
             log.warning("player refresh failed: %s", exc)
 
     return model.predict(a, b, heroes_a, heroes_b, players_a, players_b,
-                         line_minutes=req.line_minutes)
+                         line_minutes=req.line_minutes, best_of=req.best_of,
+                         series_a=req.series_a, series_b=req.series_b)
 
 
 # --------------------------------------------------------------------------

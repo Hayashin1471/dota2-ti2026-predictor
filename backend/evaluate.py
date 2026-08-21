@@ -31,6 +31,52 @@ DIRE = 1
 
 
 # --------------------------------------------------------------------------
+# series reconstruction
+# --------------------------------------------------------------------------
+def series_index() -> dict[int, dict]:
+    """match_id -> which series the map belongs to and the score before it.
+
+    Nothing in the data says "these three games were one Bo3", so the series
+    are rebuilt from the match log: the same pair of teams, in the same league,
+    starting games within `SERIES_MAX_GAP` of each other.
+
+    This walks **every** stored match, not just the ones with drafts.  Rebuild
+    it from the drafted subset instead and a series whose first map was never
+    downloaded would look like it started at 0-0 on its second map, which is
+    exactly the row the carry-over term is measured on.
+    """
+    rows = db.query(
+        "SELECT match_id, start_time, radiant_id, dire_id, radiant_win, league_name "
+        "FROM matches WHERE radiant_win IS NOT NULL AND radiant_id IS NOT NULL "
+        "AND dire_id IS NOT NULL AND duration BETWEEN ? AND ? ORDER BY start_time ASC",
+        (model.MIN_DURATION, model.MAX_DURATION))
+
+    out: dict[int, dict] = {}
+    open_series: dict[tuple, dict] = {}
+    for r in rows:
+        pair = tuple(sorted((r["radiant_id"], r["dire_id"])))
+        cur = open_series.get(pair)
+        if not (cur and r["league_name"] == cur["league"]
+                and (r["start_time"] or 0) - cur["last"] <= config.SERIES_MAX_GAP):
+            cur = {"key": f"{pair[0]}-{pair[1]}-{r['match_id']}", "league": r["league_name"],
+                   "last": r["start_time"] or 0, "wins": {pair[0]: 0, pair[1]: 0}, "maps": 0}
+            open_series[pair] = cur
+
+        # the score is recorded as it stood *before* this map was played
+        out[r["match_id"]] = {
+            "series_key": cur["key"],
+            "map_no": cur["maps"] + 1,
+            "lead_radiant": cur["wins"][r["radiant_id"]] - cur["wins"][r["dire_id"]],
+        }
+
+        winner = r["radiant_id"] if r["radiant_win"] else r["dire_id"]
+        cur["wins"][winner] += 1
+        cur["maps"] += 1
+        cur["last"] = r["start_time"] or cur["last"]
+    return out
+
+
+# --------------------------------------------------------------------------
 # dataset
 # --------------------------------------------------------------------------
 def build_dataset(min_start: float | None = None, max_start: float | None = None,
@@ -54,6 +100,8 @@ def build_dataset(min_start: float | None = None, max_start: float | None = None
     rows = db.query(sql, params)
     if not rows:
         return []
+
+    series = series_index()
 
     # picks for every match in one query beats one query per match
     picks: dict[int, dict[int, list[int]]] = {}
@@ -92,10 +140,17 @@ def build_dataset(min_start: float | None = None, max_start: float | None = None
                        min(model.HERO_DELTA_CAP, raw * model.HERO_DELTA_GAIN))
         pace = (model.team_pace(r["radiant_id"]) + model.team_pace(r["dire_id"])) / 2.0
 
+        sr = series.get(r["match_id"]) or {"series_key": None, "map_no": 1, "lead_radiant": 0}
         out.append({
             "match_id": r["match_id"],
             "start_time": r["start_time"],
             "duration": r["duration"],
+            "series_key": sr["series_key"],
+            "map_no": sr["map_no"],
+            "radiant_id": r["radiant_id"],
+            "dire_id": r["dire_id"],
+            # maps this map's radiant side had already won in the series
+            "series_lead": sr["lead_radiant"],
             "y": 1.0 if r["radiant_win"] else 0.0,
             "league": r["league_name"],
             "stage": r["stage"],
@@ -155,6 +210,94 @@ def fit_weights(rows: list[dict], l2: float = 2.0, iterations: int = 800,
     for f in FEATURES:
         w[f] = max(0.0, min(3.0, w[f]))
     return w, bias
+
+
+# --------------------------------------------------------------------------
+# series carry-over: what being up a map is worth
+# --------------------------------------------------------------------------
+def fit_series_momentum(rows: list[dict], w: dict, bias: float,
+                        test_fraction: float = 0.3) -> dict:
+    """How much a map of series lead adds, in log-odds, on top of everything else.
+
+    Only maps played at an uneven series score carry any information about
+    this, so the fit runs on those and leaves the rest alone.  The offset is
+    the model's own prediction for the map, which means the coefficient
+    measures what is left *after* team strength, the draft and - importantly -
+    the Elo bump the team already got for winning the previous map.  Half the
+    raw carry-over is already priced in there; this is the other half.
+
+    Same discipline as the term weights: fit on the older matches, score the
+    newer ones, and only keep a coefficient that beat zero on games it had not
+    seen.  Unlike the TI corrections this one has thousands of maps behind it,
+    so it usually survives.
+
+    The TI slice is reported but deliberately *not* what decides the outcome.
+    Seventy TI maps disagreeing with three thousand pro maps is what a seventy
+    game sample looks like, not a discovery about TI.
+    """
+    informative = [r for r in rows if r.get("series_lead")]
+    out: dict = {"coefficient": 0.0, "maps": len(informative), "fitted_at": time.time()}
+    if len(informative) < 300:
+        out["note"] = (f"only {len(informative)} maps played at an uneven series "
+                       f"score - need 300 before measuring carry-over")
+        return out
+
+    informative.sort(key=lambda r: r["start_time"])
+
+    def nll(rs: list[dict], c: float) -> float:
+        t = 0.0
+        for r in rs:
+            z = _predict_logit(r, w, bias) + c * r["series_lead"]
+            p = min(max(model.sigmoid(z), 1e-9), 1 - 1e-9)
+            t += r["y"] * math.log(p) + (1 - r["y"]) * math.log(1 - p)
+        return -t / len(rs)
+
+    cap = config.SERIES_MOMENTUM_CAP
+    grid = [i / 200.0 for i in range(int(-cap * 200), int(cap * 200) + 1)]
+
+    def best_c(rs: list[dict]) -> float:
+        return min(((nll(rs, c), c) for c in grid))[1]
+
+    split = int(len(informative) * (1 - test_fraction))
+    train, test = informative[:split], informative[split:]
+    c_split = best_c(train)
+    plain, fitted = nll(test, 0.0), nll(test, c_split)
+    survived = fitted < plain
+
+    # A thin sample should not produce a confident number even when it wins the
+    # check, so the value that ships is pulled toward "no carry-over".
+    raw = best_c(informative)
+    shrunk = _shrink(raw, 0.0, len(informative), config.SERIES_MOMENTUM_PRIOR)
+    out.update({
+        "coefficient": round(shrunk, 4) if survived else 0.0,
+        "raw": round(raw, 4),
+        "shrunk": round(shrunk, 4),
+        "validation": {
+            "fitted_on": len(train),
+            "scored_on": len(test),
+            "boundary": time.strftime("%Y-%m-%d",
+                                      time.localtime(test[0]["start_time"])),
+            "trial_coefficient": round(c_split, 4),
+            "log_loss": {"without": round(plain, 4), "with": round(fitted, 4),
+                         "kept": survived},
+        },
+    })
+
+    # the TI slice, reported and not acted on
+    ti_maps = [r for r in informative if is_ti(r)]
+    if ti_maps:
+        out["ti_slice"] = {
+            "maps": len(ti_maps),
+            "log_loss": {"without": round(nll(ti_maps, 0.0), 4),
+                         "with": round(nll(ti_maps, out["coefficient"]), 4)},
+            "note": "reported only - too few maps to overrule the full sample",
+        }
+
+    out["note"] = (f"carry-over of {out['coefficient']:+.3f} log-odds per map of lead"
+                   if survived else
+                   "carry-over failed its out-of-sample check - maps are treated "
+                   "as independent")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -307,11 +450,13 @@ def _validate_context(ti_rows: list[dict], w: dict, bias: float,
 # --------------------------------------------------------------------------
 def score(rows: list[dict], w: dict, bias: float = 0.0,
           line_minutes: float = config.OVER_UNDER_LINE_MIN,
-          context: dict | None = None) -> dict:
+          context: dict | None = None, momentum: float = 0.0) -> dict:
     """Win-probability and over/under metrics for a set of matches.
 
     `context` applies the TI corrections, and only to the rows that are TI
     matches, so a mixed set is scored the same way the app would score it.
+    `momentum` adds the series carry-over, which is zero for any map opening a
+    series and so only moves the rows played at an uneven score.
     """
     if not rows:
         return {"n": 0}
@@ -330,8 +475,8 @@ def score(rows: list[dict], w: dict, bias: float = 0.0,
 
     for r in rows:
         ctx = context if (context and is_ti(r)) else None
-        p = model.sigmoid(_predict_logit(r, w, bias, ctx))
-        p = min(max(p, 1e-6), 1 - 1e-6)
+        z = _predict_logit(r, w, bias, ctx) + momentum * r.get("series_lead", 0)
+        p = min(max(model.sigmoid(z), 1e-6), 1 - 1e-6)
         y = r["y"]
         ll += y * math.log(p) + (1 - y) * math.log(1 - p)
         brier += (p - y) ** 2
@@ -362,6 +507,69 @@ def score(rows: list[dict], w: dict, bias: float = 0.0,
             "accuracy": round(ou_correct / n, 4),
             "brier": round(ou_brier / n, 4),
         },
+    }
+
+
+def score_series(rows: list[dict], w: dict, bias: float = 0.0,
+                 momentum: float = 0.0, context: dict | None = None) -> dict:
+    """Score the *series* call made before its first map was played.
+
+    The main event asks who wins a Bo3, not who wins a map, and the two are
+    different questions: a 55% map favourite is a 57.5% series favourite, and a
+    model that is right about maps can still be wrong about brackets.  This
+    rebuilds each series from the rows, predicts it from the first map's
+    features alone - the only ones that exist before it starts - and scores the
+    call against what the series actually did.
+
+    Series that ended level (a drawn Bo2) are dropped: nobody won them, so
+    there is nothing to be right or wrong about.
+    """
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("series_key"):
+            groups.setdefault(r["series_key"], []).append(r)
+
+    ll = brier = 0.0
+    correct = n = 0
+    detail = []
+    for key, maps in groups.items():
+        maps.sort(key=lambda r: r["map_no"])
+        if len(maps) < 2:
+            continue
+        first = maps[0]
+        # Sides swap between maps, so `radiant_win` cannot be compared across
+        # them directly.  Score the series from the point of view of whichever
+        # team started map one on radiant, and follow that team by its id.
+        team = first["radiant_id"]
+        wins = sum(1 for m in maps
+                   if (m["y"] == 1.0) == (m["radiant_id"] == team))
+        total = len(maps)
+        if wins * 2 == total:
+            continue                        # drawn Bo2 - no series winner
+        y = 1.0 if wins * 2 > total else 0.0
+        best_of = total if total % 2 else total + 1
+        ctx = context if (context and is_ti(first)) else None
+        p_map = model.sigmoid(_predict_logit(first, w, bias, ctx))
+        p = model.series_outcome(p_map, best_of=best_of, momentum=momentum)["p_series"]["a"]
+        p = min(max(p, 1e-6), 1 - 1e-6)
+        ll += y * math.log(p) + (1 - y) * math.log(1 - p)
+        brier += (p - y) ** 2
+        correct += (p >= 0.5) == (y == 1.0)
+        n += 1
+        detail.append({"series": key, "maps": total, "p_map": round(p_map, 3),
+                       "p_series": round(p, 3), "won": bool(y),
+                       "when": time.strftime("%Y-%m-%d",
+                                             time.localtime(first["start_time"]))})
+
+    if not n:
+        return {"n": 0}
+    return {
+        "n": n,
+        "log_loss": round(-ll / n, 4),
+        "brier": round(brier / n, 4),
+        "accuracy": round(correct / n, 4),
+        "baseline_log_loss": round(math.log(2), 4),
+        "detail": detail,
     }
 
 
@@ -429,6 +637,14 @@ def run(test_fraction: float = 0.25, apply: bool = False,
     context = fit_ti_context(group_rows, w, bias)
     context_full = fit_ti_context(group_rows, w_full, bias_full)
 
+    # The carry-over is a property of pro series in general, not of TI, so it
+    # is fitted on everything - measured with the split weights, stored with
+    # the full ones, the same split the term weights use.
+    momentum = fit_series_momentum(train, w, bias)
+    momentum_full = fit_series_momentum(rows, w_full, bias_full)
+    c = float(momentum["coefficient"])
+    c_full = float(momentum_full["coefficient"])
+
     result = {
         "dataset": {
             "matches": len(rows),
@@ -453,11 +669,52 @@ def run(test_fraction: float = 0.25, apply: bool = False,
         "config_weights": {"team": config.W_TEAM, "hero": config.W_HERO_WINRATE,
                            "matchup": config.W_MATCHUP},
         "ti_context": context_full,
+        "series_momentum": momentum_full,
         "train_score": score(train, w, bias),
         "test_score": score(test, w, bias),
         "test_score_with_config_weights": score(test, baseline_w, 0.0),
         "calibration_test": calibration(test, w, bias),
     }
+
+    # --- the series question, which is the one the main event asks ---------
+    # Every bracket match is a Bo3 and the final a Bo5, so "who wins the map"
+    # is only half an answer.  These are scored on the call made before the
+    # first map, the only information a bracket prediction ever has.
+    result["series_score"] = {
+        "test": {
+            "independent_maps": score_series(test, w, bias, momentum=0.0),
+            "with_carry_over": score_series(test, w, bias, momentum=c),
+        },
+        "note": "Series rebuilt from the match log by pairing, league and start "
+                "time; drawn Bo2s are excluded because nobody won them.",
+    }
+    for name, slice_ in (("ti_group", group_rows), ("ti_playoff", playoff_rows)):
+        sc = score_series(slice_, w, bias, momentum=c, context=context)
+        if sc.get("n"):
+            result["series_score"][name] = sc
+
+    # --- the carry-over, on the only rows it can move ---------------------
+    # A map opening a series has a lead of zero and is untouched by the term,
+    # so scoring it over a whole slice dilutes the effect to nothing.  These
+    # are the maps played at 1-0 or better.
+    result["carry_over_effect"] = {
+        "note": "Only maps played at an uneven series score; every other map is "
+                "identical with and without the term.",
+        "coefficient": c,
+    }
+    for name, slice_ in (("test", test), ("ti_group", group_rows),
+                         ("ti_playoff", playoff_rows)):
+        mid = [r for r in slice_ if r.get("series_lead")]
+        if len(mid) < 4:
+            continue
+        ctx = context if name.startswith("ti") else None
+        result["carry_over_effect"][name] = {
+            "maps": len(mid),
+            "without": score(mid, w, bias, context=ctx)["log_loss"],
+            "with": score(mid, w, bias, context=ctx, momentum=c)["log_loss"],
+            "accuracy_without": score(mid, w, bias, context=ctx)["accuracy"],
+            "accuracy_with": score(mid, w, bias, context=ctx, momentum=c)["accuracy"],
+        }
 
     # --- what the TI corrections are worth, on the games they were fitted on --
     if group_rows:
@@ -529,6 +786,7 @@ def run(test_fraction: float = 0.25, apply: bool = False,
             "trained_on": len(rows),
         })
         db.set_meta("ti_context", context_full)
+        db.set_meta("series_momentum", momentum_full)
         model.invalidate_cache()
         result["applied"] = True
 

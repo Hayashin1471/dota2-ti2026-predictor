@@ -480,6 +480,91 @@ def team_pace(team_id: int | None) -> float:
 
 
 # ==========================================================================
+# 4. Series (Bo3 / Bo5)
+# ==========================================================================
+def series_momentum() -> float:
+    """Log-odds a side gains per map of series lead.
+
+    `evaluate.fit_series_momentum` measures this on every multi-map series in
+    the database and writes it to the `series_momentum` meta key, or writes 0
+    if it failed the out-of-sample check.  Until it has run, the hand-set value
+    in config applies.
+    """
+    stored = db.get_meta("series_momentum")
+    value = (float(stored.get("coefficient", config.W_SERIES_MOMENTUM))
+             if isinstance(stored, dict) else config.W_SERIES_MOMENTUM)
+    return max(-config.SERIES_MOMENTUM_CAP, min(config.SERIES_MOMENTUM_CAP, value))
+
+
+def series_outcome(p_map: float, best_of: int = 3, wins_a: int = 0, wins_b: int = 0,
+                   momentum: float | None = None) -> dict:
+    """Turn a single-map probability into the distribution over series results.
+
+    `p_map` is the probability A wins a map played at a *level* series, which is
+    what the rest of the model estimates.  Each remaining map is then played at
+    `sigmoid(logit(p_map) + momentum * (wins_a - wins_b))`, so being up a map
+    both shortens the series and makes the next map likelier - the carry-over
+    measured in `evaluate.fit_series_momentum`.
+
+    With `momentum = 0` this reduces to the usual independent-maps binomial.
+    Passing a `wins_a`/`wins_b` already on the board prices a series in
+    progress, which is the normal case once a Bo3 is under way.
+
+    Returns the win probability for each side, the full scoreline distribution
+    and the expected number of maps, which is what a "total maps" line asks for.
+    """
+    if best_of < 1 or best_of % 2 == 0:
+        raise ValueError("best_of must be an odd number of maps")
+    need = best_of // 2 + 1
+    wins_a = max(0, min(need, int(wins_a)))
+    wins_b = max(0, min(need, int(wins_b)))
+    c = series_momentum() if momentum is None else momentum
+    z = logit(p_map)
+
+    # Walk the tree of remaining maps.  A Bo5 has at most 25 states, so the
+    # recursion is cheap and exact - no simulation needed.
+    scorelines: dict[tuple[int, int], float] = {}
+
+    def walk(a: int, b: int, prob: float) -> None:
+        if prob <= 0.0:
+            return
+        if a >= need or b >= need:
+            scorelines[(a, b)] = scorelines.get((a, b), 0.0) + prob
+            return
+        p = sigmoid(z + c * (a - b))
+        walk(a + 1, b, prob * p)
+        walk(a, b + 1, prob * (1 - p))
+
+    walk(wins_a, wins_b, 1.0)
+
+    p_a = sum(pr for (a, b), pr in scorelines.items() if a > b)
+    played = [{"a": a, "b": b, "maps": a + b,
+               "p": round(pr, 4), "winner": "a" if a > b else "b"}
+              for (a, b), pr in sorted(scorelines.items(), key=lambda kv: -kv[1])]
+    expected_maps = sum((a + b) * pr for (a, b), pr in scorelines.items())
+
+    # "total maps over N.5" - the half-line that has no push
+    half_line = best_of - 0.5 if best_of > 1 else None
+    p_over_maps = (sum(pr for (a, b), pr in scorelines.items() if a + b > half_line)
+                   if half_line else None)
+
+    return {
+        "best_of": best_of,
+        "maps_to_win": need,
+        "score_so_far": {"a": wins_a, "b": wins_b},
+        "p_map_level": round(p_map, 4),
+        "momentum": round(c, 4),
+        "p_series": {"a": round(p_a, 4), "b": round(1 - p_a, 4)},
+        "scorelines": played,
+        "expected_maps": round(expected_maps, 2),
+        "maps_remaining": round(expected_maps - wins_a - wins_b, 2),
+        "total_maps_line": half_line,
+        "p_over_maps": round(p_over_maps, 4) if p_over_maps is not None else None,
+        "decided": wins_a >= need or wins_b >= need,
+    }
+
+
+# ==========================================================================
 # Prediction
 # ==========================================================================
 HERO_DELTA_CAP = 0.15       # +/- ~16% on match length from the draft alone
@@ -545,7 +630,8 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
             players_a: list[int | None] | None = None,
             players_b: list[int | None] | None = None,
             line_minutes: float = config.OVER_UNDER_LINE_MIN,
-            ti_mode: bool = True) -> dict:
+            ti_mode: bool = True, best_of: int = 1,
+            series_a: int = 0, series_b: int = 0) -> dict:
     """team_a/team_b are rows from ti_teams (dicts with slug, name, team_id).
 
     `players_a`/`players_b` are OpenDota account ids aligned slot-for-slot with
@@ -554,6 +640,12 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
     `ti_mode` applies the corrections fitted on TI games already played.  It
     defaults to on because every prediction this app is asked for *is* a TI
     game; the backtest turns it off for non-TI matches.
+
+    `best_of` and the maps already won (`series_a`/`series_b`) turn the answer
+    from "who wins this map" into "who wins this series", which is the question
+    the main event actually asks - every bracket match there is a Bo3 and the
+    grand final a Bo5.  A series already in progress feeds back into the map
+    number too, through the carry-over term.
     """
     table = hero_table()
     sa = team_strength(team_a.get("team_id"))
@@ -603,8 +695,22 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
     player_logit = w["player"] * player_raw
     player_logit = max(-config.PLAYER_LOGIT_CAP, min(config.PLAYER_LOGIT_CAP, player_logit))
 
-    total_logit = team_logit + draft_logit + player_logit
+    # --- where the series already stands -------------------------------
+    # Being up a map is worth something beyond the ratings: the side that is
+    # ahead has shown it can beat this opponent today, on this patch, and it
+    # drafts second-guessed by a team that now has to change something.
+    # `evaluate.fit_series_momentum` puts a number on that.
+    lead = int(series_a) - int(series_b)
+    momentum = series_momentum()
+    momentum_logit = max(-config.SERIES_MOMENTUM_CAP * 2,
+                         min(config.SERIES_MOMENTUM_CAP * 2, momentum * lead))
+
+    # The map probability at a *level* series is what the series maths needs;
+    # the number for the map about to be played carries the lead as well.
+    level_logit = team_logit + draft_logit + player_logit
+    total_logit = level_logit + momentum_logit
     p_a = sigmoid(total_logit)
+    p_level = sigmoid(level_logit)
 
     # --- match length -------------------------------------------------
     base = duration_baseline()
@@ -660,10 +766,31 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
                      f"thủ đó trên hero này — phần đó được tính là trung tính.")
     if not assigned and (heroes_a or heroes_b):
         notes.append("Chưa gán tuyển thủ cho hero nào — yếu tố 'tuyển thủ với hero' đang bằng 0.")
+    if lead and momentum:
+        ahead = team_a["name"] if lead > 0 else team_b["name"]
+        notes.append(
+            f"Chuỗi đang dẫn {abs(lead)} ván nghiêng về {ahead}: cộng thêm "
+            f"{abs(momentum_logit):.2f} log-odds cho đội đó, theo mức quán tính "
+            f"đo được trên các series pro đã đấu.")
+    if best_of > 1 and momentum == 0.0:
+        notes.append("Quán tính trong series không vượt được kiểm tra ngoài mẫu "
+                     "nên các ván được coi là độc lập với nhau.")
     if ctx["active"]:
         notes.append(
             f"Đã hiệu chỉnh theo {ctx['games']} ván TI 2026 đã đấu: trọng số hero ×"
             f"{ctx['hero_mult']:.2f}, thời lượng {ctx['duration_shift']*100:+.1f}% log.")
+
+    series = None
+    if best_of > 1:
+        series = series_outcome(p_level, best_of=best_of,
+                                wins_a=series_a, wins_b=series_b, momentum=momentum)
+        series["team_a"] = team_a["name"]
+        series["team_b"] = team_b["name"]
+        series["favourite"] = (team_a["name"] if series["p_series"]["a"] >= 0.5
+                               else team_b["name"])
+        # a series runs several maps, so its total length is one map's expected
+        # length times however many maps it is expected to still take
+        series["expected_total_minutes"] = round(median_min * series["maps_remaining"], 1)
 
     return {
         "win_probability": {
@@ -672,6 +799,7 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
             "favourite": team_a["name"] if p_a >= 0.5 else team_b["name"],
             "edge": round(abs(p_a - 0.5) * 2, 4),
         },
+        "series": series,
         "duration": {
             "line_minutes": line_minutes,
             "expected_minutes": round(median_min, 1),
@@ -699,7 +827,13 @@ def predict(team_a: dict, team_b: dict, heroes_a: list[int], heroes_b: list[int]
                 "a": lineup_a,
                 "b": lineup_b,
             },
+            "series_momentum": {
+                "lead": lead,
+                "per_map": round(momentum, 4),
+                "logit": round(momentum_logit, 4),
+            },
             "draft_total_logit": round(draft_logit, 4),
+            "level_logit": round(level_logit, 4),
             "total_logit": round(total_logit, 4),
             "duration_terms": {
                 "baseline_log": round(base["mu"], 4),

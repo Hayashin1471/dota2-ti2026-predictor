@@ -66,6 +66,26 @@
           <span>phút</span>
         </div>
       </div>
+      <div class="series-control">
+        <label>Thể thức</label>
+        <div class="bo-switch" id="bo-switch" role="group" aria-label="Thể thức loạt đấu">
+          <button type="button" class="bo-opt active" data-bo="1">BO1</button>
+          <button type="button" class="bo-opt" data-bo="3">BO3</button>
+          <button type="button" class="bo-opt" data-bo="5">BO5</button>
+        </div>
+        <div class="series-score hidden" id="series-score">
+          <span class="ss-label">Tỉ số hiện tại</span>
+          <div class="ss-row">
+            <button type="button" class="ss-btn" data-side="a" data-step="-1" aria-label="Bớt ván thắng team A">−</button>
+            <span class="ss-num a" id="ss-a">0</span>
+            <button type="button" class="ss-btn" data-side="a" data-step="1" aria-label="Thêm ván thắng team A">+</button>
+            <span class="ss-sep">—</span>
+            <button type="button" class="ss-btn" data-side="b" data-step="-1" aria-label="Bớt ván thắng team B">−</button>
+            <span class="ss-num b" id="ss-b">0</span>
+            <button type="button" class="ss-btn" data-side="b" data-step="1" aria-label="Thêm ván thắng team B">+</button>
+          </div>
+        </div>
+      </div>
       <button class="btn btn-ghost btn-tiny" id="btn-clear">Xoá lựa chọn</button>
     </div>
 
@@ -106,6 +126,23 @@
           <div class="wl b"><span class="nm" id="win-name-b">—</span><span class="pct" id="win-pct-b">—</span></div>
         </div>
         <p class="verdict" id="verdict">—</p>
+      </article>
+
+      <article class="card card-series hidden" id="card-series">
+        <header class="card-head">
+          <h2>Kết quả loạt đấu</h2>
+          <span class="chip chip-line" id="series-format">BO3</span>
+        </header>
+        <div class="winbar">
+          <div class="winbar-fill a" id="series-fill-a"></div>
+          <div class="winbar-fill b" id="series-fill-b"></div>
+        </div>
+        <div class="winbar-labels">
+          <div class="wl a"><span class="pct" id="series-pct-a">—</span><span class="nm" id="series-name-a">—</span></div>
+          <div class="wl b"><span class="nm" id="series-name-b">—</span><span class="pct" id="series-pct-b">—</span></div>
+        </div>
+        <div class="scorelines" id="scorelines"></div>
+        <p class="muted small" id="series-note"></p>
       </article>
 
       <article class="card card-ou">
