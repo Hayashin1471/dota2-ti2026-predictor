@@ -237,8 +237,10 @@ Kết quả hiện tại (109 ván vòng bảng: fit trên 54 ván cũ, chấm t
 
 | | Không hiệu chỉnh | Có hiệu chỉnh | Kết luận |
 |---|---|---|---|
-| Log-loss | **0,5754** | 0,5820 | ✗ loại nhóm draft |
-| Brier O/U | **0,2679** | 0,2835 | ✗ loại `duration_shift` |
+| Log-loss | **0,5806** | 0,5854 | ✗ loại nhóm draft |
+| Brier O/U | **0,2694** | 0,2849 | ✗ loại `duration_shift` |
+
+Đây là lần thứ năm liên tiếp cổng này đóng.
 
 Cả hai bị loại → `hero_mult = matchup_mult = 1,0`, `duration_shift = 0` → **mô hình chạy đúng như
 khi không có bất kỳ điều chỉnh TI nào**. `/api/status` và `factors.ti_context` báo `active: false`.
@@ -263,9 +265,23 @@ nó xếp cả 109 ván dưới một tournament `The International 2026 Group S
 `KNOCKOUT_WORDS`: `"main event"` không phải từ khoá nhánh (GosuGamers dùng nó cho cả kỳ LAN), và
 `"elimination"` cũng không (đó là vòng loại *trong* giai đoạn Thuỵ Sĩ).
 
-Khi nhánh Main Event bắt đầu, `ingest.label_match_stages` sẽ bắt nó qua các từ upper/lower bracket,
-quarterfinal, semifinal, grand final — và các ván đó thành holdout tiến về phía trước thật sự. Nhãn
-vòng lấy từ trang bracket của Liquipedia, nạp sẵn vào lịch ngay khi cặp đấu được xác định.
+Khi nhánh Main Event bắt đầu, cách bắt nhãn đầu tiên là dò các từ upper/lower bracket, quarterfinal,
+semifinal, grand final trong lịch GosuGamers rồi quy từng series về đúng số ván của nó. Cách đó
+**đã hỏng một lần và hỏng lặng lẽ**: lịch GosuGamers chỉ giữ một cửa sổ trượt, nên đến tối 22/8 hai
+series tứ kết nhánh trên ngày 20/8 (Spirit – Iron Wing, VISION – BoomBoys) đã rơi khỏi trang. Lần
+`refresh core` kế tiếp không còn thấy chúng, và 5 ván đó **tự động quay về nhãn `group`** — tức là
+5 ván loại trực tiếp lặng lẽ chui vào tập fit hiệu chỉnh vòng bảng, đúng cái tập phải sạch nhất.
+Không có lỗi nào được in ra; chỉ có một con số 114 ở chỗ đáng lẽ là 109.
+
+Nhãn giờ lấy từ một mốc không mục nát: trang Main Event của Liquipedia có ngày khai mạc
+(`2026-08-20`), và vòng bảng đã đá xong trước ngày đó, nên **mọi ván TI từ mốc đó trở đi là ván
+nhánh** — một phép so sánh thời gian, không phụ thuộc vào việc nguồn nào còn liệt kê series nào.
+Cách dò-từ-khoá vẫn còn nguyên làm đường lui cho trường hợp wiki không cho ngày, và
+`label_match_stages` trả về `rule` để biết nó vừa dùng đường nào. Nhãn vòng của từng cặp đấu vẫn lấy
+từ trang bracket Liquipedia, nạp sẵn vào lịch ngay khi cặp đấu được xác định.
+
+Bài học lặp lại bài học ở mục 4.3, chỉ ở tầng dữ liệu: một quy trình đọc từ nguồn có cửa sổ trượt
+thì **im lặng không phải là bằng chứng nó còn đúng**.
 
 ### Ước lượng thô hội tụ về "không có gì"
 
@@ -277,15 +293,18 @@ vòng bảng đầy dần:
 | ngày 1–2 (59 ván) | 0,00 | +0,068 | 0,036 | 1,9 |
 | ngày 1–3 (97 ván) | 0,35 | +0,028 | 0,027 | 1,0 |
 | ngày 1–4 (109 ván) | 0,75 | +0,017 | 0,026 | 0,7 |
-| **109 ván đó, trọng số fit lại sau 3 ngày nhánh** | **1,15** | **+0,010** | 0,026 | **0,4** |
+| 109 ván đó, trọng số fit lại sau 3 ngày nhánh | 1,15 | +0,010 | 0,026 | 0,4 |
+| **109 ván đó, trọng số fit lại trên 3.646 trận** | **1,15** | **+0,010** | 0,026 | **0,4** |
 
 `hero_mult` bò từ 0,00 lên 0,75 rồi **vượt qua 1,0** (1,0 = không hiệu chỉnh), và t của thời lượng
 rơi từ 1,9 xuống 0,4. Đúng cái mà một hiệu ứng không tồn tại phải làm khi mẫu lớn dần.
 
-Dòng cuối đáng đọc kỹ: nó **vẫn là đúng 109 ván vòng bảng đó**, không thêm ván nào vào phần fit.
-Thứ duy nhất đổi là bộ trọng số nền, được fit lại trên 3.059 trận thay vì 2.779. Một ước lượng lật
-từ "số hạng hero chỉ đáng một nửa" sang "đáng hơn bình thường 15%" chỉ vì trọng số nền xê dịch vài
-phần trăm thì tự nó đã nói rằng nó không đo được gì.
+Hai dòng cuối đáng đọc kỹ: chúng **vẫn là đúng 109 ván vòng bảng đó**, không thêm ván nào vào phần
+fit. Thứ duy nhất đổi là bộ trọng số nền — 2.779 trận, rồi 3.059, rồi 3.646. Một ước lượng lật từ
+"số hạng hero chỉ đáng một nửa" sang "đáng hơn bình thường 15%" chỉ vì trọng số nền xê dịch thì tự
+nó đã nói rằng nó không đo được gì. Rằng nó đứng yên ở 1,15 qua hai lần fit nền cuối chỉ có nghĩa
+là nhiễu đã ổn định, không có nghĩa là nó đã thành tín hiệu — 1,15 vẫn nằm sai phía của mốc 1,0 so
+với giả thuyết ban đầu.
 
 Cổng kiểm chứng vẫn loại cả hai — đúng các con số ở bảng trên.
 
@@ -334,17 +353,17 @@ Vẫn còn một điểm chưa xử lý được: bảng tỉ lệ thắng và b
 
 ### Kết quả đo thực tế
 
-Dataset 3.059 trận (13/5 → 22/8/2026, đã gồm 135 ván TI: 109 ván vòng bảng và 26 ván nhánh Main
-Event tính đến hết trận trưa 22/8), fit trên 2.294 trận cũ, chấm trên 765 trận mới hơn:
+Dataset 3.646 trận (6/5 → 22/8/2026, đã gồm toàn bộ 140 ván TI: 109 ván vòng bảng và 31 ván nhánh
+Main Event tính đến hết ngày 22/8), fit trên 2.734 trận cũ, chấm trên 912 trận mới hơn:
 
 | Chỉ số | Trọng số đã fit | Trọng số config cũ | Tung đồng xu |
 |---|---|---|---|
-| Log-loss | **0,6077** | 0,6481 | 0,6931 |
-| Độ chính xác | **66,5%** | 62,0% | 50% |
-| Brier | **0,2102** | 0,2284 | 0,25 |
+| Log-loss | **0,6026** | 0,6494 | 0,6931 |
+| Độ chính xác | **67,5%** | 63,7% | 50% |
+| Brier | **0,2075** | 0,2289 | 0,25 |
 
-Trọng số lưu vào DB (fit trên toàn bộ 3.059 trận, gồm cả 135 ván TI): `team=0.679`, `hero=0.971`,
-`matchup=3.0`, bias phe Radiant `+0.124`. Hệ số chuỗi `series=0.178` (mục 4.5).
+Trọng số lưu vào DB (fit trên toàn bộ 3.646 trận, gồm cả 140 ván TI): `team=0.654`, `hero=0.922`,
+`matchup=3.0`, bias phe Radiant `+0.094`. Hệ số chuỗi `series=0.174` (mục 4.5).
 
 `matchup=3.0` đang **chạm trần cứng** trong `fit_weights`. Nghĩa là hàm likelihood còn muốn đẩy nó
 cao hơn nữa, và trần đó — chứ không phải dữ liệu — mới là thứ quyết định con số. Không sửa vội: số
@@ -356,16 +375,16 @@ mà app đưa ra có ý nghĩa thật chứ không chỉ là thứ tự hơn ké
 
 | Khoảng dự đoán | Số trận | App dự đoán | Thực tế |
 |---|---|---|---|
-| 0–20% | 7 | 15,9% | 0,0% |
-| 20–40% | 132 | 32,4% | 19,7% |
-| 40–60% | 348 | 50,1% | 46,0% |
-| 60–80% | 251 | 68,4% | 71,3% |
-| 80–100% | 27 | 83,3% | 88,9% |
+| 0–20% | 9 | 16,2% | 0,0% |
+| 20–40% | 177 | 32,9% | 21,5% |
+| 40–60% | 423 | 50,2% | 46,3% |
+| 60–80% | 283 | 68,4% | 74,2% |
+| 80–100% | 20 | 82,9% | 95,0% |
 
-**O/U vẫn là điểm yếu nhất.** Trên tập test độ chính xác 56,5% trong khi tỉ lệ over thực tế là
-52,2% — mô hình gần như chỉ đang đoán theo xu hướng chung. Nhánh Main Event còn khó hơn: 26 ván ở
-đó **69,2% vượt mốc 41′** (vòng bảng 61,5%) mà mô hình chỉ đúng 57,7%, Brier 0,2481. Ván loại trực
-tiếp dài hơn ván vòng bảng, và 26 ván là quá ít để nói vì sao; nhưng dù có biết vì sao thì mô hình
+**O/U vẫn là điểm yếu nhất.** Trên tập test độ chính xác 58,4% trong khi tỉ lệ over thực tế là
+49,1% — mô hình gần như chỉ đang đoán theo xu hướng chung. Nhánh Main Event còn khó hơn: 31 ván ở
+đó **71,0% vượt mốc 41′** (vòng bảng 61,5%) mà mô hình chỉ đúng 58,1%, Brier 0,2450. Ván loại trực
+tiếp dài hơn ván vòng bảng, và 31 ván là quá ít để nói vì sao; nhưng dù có biết vì sao thì mô hình
 thời lượng cũng không có chỗ nào để nhận thông tin đó, vì `duration_shift` (hướng sửa duy nhất từng
 có vẻ hứa hẹn) đã bị chính kiểm chứng của nó loại — xem mục 4.3. Phần thắng/thua đáng tin hơn hẳn
 phần thời lượng.
@@ -400,32 +419,34 @@ App có nút chọn **BO1 / BO3 / BO5** ngay dưới nút Dự đoán, kèm ô n
 (2–0 / 2–1 / 1–2 / 0–2), số ván dự kiến và tổng thời lượng dự kiến của cả loạt.
 
 **Các ván trong một chuỗi không độc lập nhau.** Dựng lại chuỗi từ log trận (cùng cặp đội, cùng giải,
-hai ván cách nhau dưới `SERIES_MAX_GAP` = 3 giờ) rồi đo trên **3.259 ván** đá ở thế tỉ số lệch:
+hai ván cách nhau dưới `SERIES_MAX_GAP` = 3 giờ) rồi đo trên **2.759 ván** đá ở thế tỉ số lệch và có
+đủ Elo trước trận cho cả hai bên:
 
 | | Kỳ vọng theo Elo | Thực tế |
 |---|---|---|
-| Đội thắng ván 1 thắng luôn ván 2 | 56,4% | **60,1%** (n = 2.373) |
-| Đội đang dẫn 1–0 thắng ván sau | 55,8% | **61,1%** (n = 1.197) |
-| Đội đang bị dẫn 0–1 thắng ván sau | 43,1% | **40,7%** (n = 1.225) |
+| Đội thắng ván 1 thắng luôn ván 2 | 54,2% | **59,5%** (n = 2.662) |
+| Đội đang dẫn thắng ván sau | 54,2% | **59,7%** (n = 2.759) |
+| Đội đang bị dẫn thắng ván sau | 45,8% | **40,3%** (n = 2.759) |
 
 Elo tự nó đã ăn được khoảng một nửa hiệu ứng — nó cập nhật sau **từng ván**, nên thắng một ván đã
 đẩy rating lên ~0,14 log-odds trước ván sau. Phần **còn dư** sau khi trừ hết đi là số hạng mới:
 
 ```
-W_series = +0.178 log-odds mỗi ván dẫn trước
+W_series = +0.174 log-odds mỗi ván dẫn trước
 ```
 
-Fit bằng max-likelihood trên 1.151 ván có draft ở thế tỉ số lệch, shrink về 0 với
-`SERIES_MOMENTUM_PRIOR = 400` ván giả định (thô 0,240 → dùng 0,178), rồi **phải qua kiểm chứng
-out-of-sample** đúng như trọng số chính: fit trên 805 ván cũ, chấm trên 346 ván mới hơn — log-loss
-0,6036 → **0,5954**, qua. Nếu một lần chạy sau nó trượt, hệ số tự về 0 và các ván lại được coi là
+Fit bằng max-likelihood trên 1.377 ván có draft ở thế tỉ số lệch, shrink về 0 với
+`SERIES_MOMENTUM_PRIOR = 400` ván giả định (thô 0,225 → dùng 0,174), rồi **phải qua kiểm chứng
+out-of-sample** đúng như trọng số chính: fit trên 963 ván cũ, chấm trên 414 ván mới hơn — log-loss
+0,5928 → **0,5830**, qua. Nếu một lần chạy sau nó trượt, hệ số tự về 0 và các ván lại được coi là
 độc lập.
 
-**Một điểm phải nói thẳng:** trên chính dữ liệu TI 2026 (54 ván ở thế tỉ số lệch) hiệu ứng này
-**không** cải thiện gì — log-loss 0,6008 → 0,6112. Riêng 10 ván nhánh Main Event còn tệ hơn: 0,765
-→ 0,801, độ chính xác 40% cả hai bên. Số hạng vẫn được dùng, vì 54 ván không đủ để lật hơn 1.100
-ván, nhưng `evaluate` in riêng lát cắt TI ra (`series_momentum.ti_slice`) để chuyện đó không bị
-giấu đi. Đây khác hẳn với `hero_mult` ở mục 4.3: cái đó là hiệu chỉnh *của riêng TI*, chỉ có dữ
+**Một điểm phải nói thẳng:** trên chính dữ liệu TI 2026 (55 ván ở thế tỉ số lệch) hiệu ứng này
+**không** cải thiện gì — log-loss 0,5998 → 0,6112. Riêng 11 ván nhánh Main Event còn tệ hơn nhiều:
+0,749 → 0,783, và độ chính xác rơi từ 54,5% xuống 27,3% — quán tính đẩy dự đoán về phía đội đang
+dẫn đúng lúc nhánh này liên tục có đội bị dẫn ngược dòng. Số hạng vẫn được dùng, vì 55 ván không đủ
+để lật gần 1.400 ván, nhưng `evaluate` in riêng lát cắt TI ra (`series_momentum.ti_slice`) để
+chuyện đó không bị giấu đi. Đây khác hẳn với `hero_mult` ở mục 4.3: cái đó là hiệu chỉnh *của riêng TI*, chỉ có dữ
 liệu TI để dựa vào, nên dữ liệu TI có quyền phủ quyết nó.
 
 **Đo ở cấp chuỗi, không phải cấp ván.** `evaluate` chấm luôn dự đoán chuỗi *đưa ra trước ván đầu
@@ -433,50 +454,83 @@ tiên* — thông tin duy nhất mà một dự đoán nhánh từng có:
 
 | Lát cắt | Số chuỗi | Log-loss | Độ chính xác |
 |---|---|---|---|
-| Tập test (pro nói chung) | 281 | 0,6308 | 64,4% |
-| Vòng bảng TI 2026 | 44 | 0,6424 | 59,1% |
-| **Nhánh Main Event (đến trưa 22/8)** | **9** | **0,5231** | **66,7%** |
+| Tập test (pro nói chung) | 343 | 0,6312 | 63,9% |
+| Vòng bảng TI 2026 | 44 | 0,6403 | 59,1% |
+| **Nhánh Main Event (hết 22/8)** | **11** | **0,5466** | **63,6%** |
 
 ### Nhánh Main Event: chỗ duy nhất mô hình chưa từng nhìn thấy
 
-Nhánh loại trực tiếp là holdout thật: `fit_ti_context` chỉ fit trên các ván **vòng bảng**, nên 26
+Nhánh loại trực tiếp là holdout thật: `fit_ti_context` chỉ fit trên các ván **vòng bảng**, nên 31
 ván nhánh chưa hề tham gia vào bất cứ hiệu chỉnh nào. `evaluate` in nó ra thành khối
-`playoff_forward_test`. Sau ba ngày:
+`playoff_forward_test`. Hết ngày 22/8, khi chỉ còn lại chung kết nhánh dưới và chung kết tổng:
 
-| Chấm cùng một tập ván nhánh | Cấp ván (26 ván) | Cấp chuỗi (9 series) |
+| Chấm cùng một tập ván nhánh | Cấp ván (31 ván) | Cấp chuỗi (11 series) |
 |---|---|---|
-| Log-loss | 0,6620 | **0,5231** |
-| Độ chính xác | 57,7% | **66,7%** |
-| So với vòng bảng | 0,5980 · 67,9% | 0,6424 · 59,1% |
+| Log-loss | 0,6416 | **0,5466** |
+| Độ chính xác | 67,7% | 63,6% |
+| So với vòng bảng | 0,5993 · 67,0% | 0,6403 · 59,1% |
 
-Hai cột đó đảo dấu nhau và đó là kết quả đáng chú ý nhất của cả kỳ nhánh: ở **cấp ván**, nhánh khó
-hơn vòng bảng rõ rệt (57,7% so với 67,9%) — tám đội mạnh gần nhau, các cặp đấu cân hơn nhiều. Nhưng
-ở **cấp chuỗi**, chính nhánh lại là lát cắt mô hình làm tốt nhất. Bo3 lọc nhiễu: một ván lẻ giữa hai
-đội 55–45 gần như tung đồng xu, còn cả loạt thì không.
+**Đọc kỹ chỗ này trước khi mừng.** Bản trước ghi 57,7% cấp ván trên 26 ván (15 đúng); giờ là 67,7%
+trên 31 ván (21 đúng). Phần lớn cú nhảy đó là do **5 ván mới đúng cả 5** — ba ván chung kết nhánh
+trên, ván 3 của Nigma – BoomBoys và ván mở màn BoomBoys – Spirit. Một ván trong 26 ván cũ cũng đổi
+phe sau khi fit lại nền (dataset 3.059 → 3.646, Elo trước trận tính lại), thành 16/26. Cộng lại:
+16 + 5 = 21. Năm ván đúng liên tiếp là chuyện hoàn toàn có thể xảy ra do may — với 31 ván, một
+chuỗi như thế đủ để dời độ chính xác 10 điểm phần trăm, nên đừng đọc con số này như một phép đo về
+nhánh.
 
-Chín series, đúng 6:
+Thứ ổn định hơn là **cấp chuỗi**: log-loss 0,5231 → 0,5466 và độ chính xác 66,7% → 63,6% qua cùng
+lần fit lại đó, vẫn tốt hơn vòng bảng (0,6403). Bo3 lọc nhiễu — một ván lẻ giữa hai đội 55–45 gần
+như tung đồng xu, còn cả loạt thì không — nên dự đoán nhánh phải nói bằng series.
+
+Mười một series chấm được, đúng 7 (series thứ 12, BoomBoys – Spirit tối 22/8, chưa chấm: OpenDota
+mới đánh chỉ mục 1 trong 2 ván nên `score_series` bỏ qua nó):
 
 | Series | Mô hình | Kết quả |
 |---|---|---|
-| Spirit – Iron Wing | Spirit 75,3% | Spirit 2–0 ✓ |
-| VISION – BoomBoys | VISION 87,5% | VISION 2–1 ✓ |
-| Yandex – Liquid | Yandex 65,5% | Yandex 2–0 ✓ |
-| Falcons – Nigma | Falcons 63,9% | Nigma 2–1 ✗ |
-| BoomBoys – Iron Wing | BoomBoys 65,7% | BoomBoys 2–1 ✓ |
-| Liquid – Falcons | Falcons 50,6% | Liquid 2–1 ✗ |
-| VISION – Spirit | VISION 77,3% | VISION 2–1 ✓ |
-| Yandex – Nigma | Yandex 60,8% | Yandex 2–1 ✓ |
-| Liquid – Spirit | Liquid 62,0% | Spirit 2–0 ✗ |
+| Spirit – Iron Wing | Spirit 73,2% | Spirit 2–0 ✓ |
+| VISION – BoomBoys | VISION 87,4% | VISION 2–1 ✓ |
+| Yandex – Liquid | Yandex 64,4% | Yandex 2–0 ✓ |
+| Falcons – Nigma | Falcons 62,7% | Nigma 2–1 ✗ |
+| BoomBoys – Iron Wing | BoomBoys 63,9% | BoomBoys 2–1 ✓ |
+| Liquid – Falcons | Falcons 51,8% | Liquid 2–1 ✗ |
+| VISION – Spirit | VISION 76,2% | VISION 2–1 ✓ |
+| Yandex – Nigma | Yandex 59,0% | Yandex 2–1 ✓ |
+| Liquid – Spirit | Liquid 59,7% | Spirit 2–0 ✗ |
+| Nigma – BoomBoys | Nigma 58,7% | BoomBoys 2–1 ✗ |
+| VISION – Yandex | VISION 69,2% | VISION 2–1 ✓ |
 
-Hai trong ba lần trượt là Falcons: mô hình xếp họ trên cả Nigma lẫn Liquid, và họ bị loại từ vòng
-1 nhánh dưới. Chín series vẫn là giai thoại, không phải phép đo — nhưng nó là giai thoại đúng chiều
-với lý do thẻ chuỗi tồn tại.
+Hai trong bốn lần trượt là Falcons: mô hình xếp họ trên cả Nigma lẫn Liquid, và họ bị loại từ vòng
+1 nhánh dưới. Mười một series vẫn là giai thoại, không phải phép đo.
 
-Cổng kiểm chứng không đổi trạng thái sau nhánh: chấm 26 ván nhánh bằng mô hình trơn và bằng hiệu
-chỉnh fit từ vòng bảng cho **cùng một con số** (0,6620) — vì hiệu chỉnh đang bằng 1/1/0, tức không
-làm gì cả. Còn nếu áp bản fit thô chưa qua cổng thì log-loss nhích xấu đi thành 0,6623 — lần này
-chênh lệch nhỏ, không phải thảm hoạ như ngày 4 vòng bảng, nhưng vẫn cùng chiều: "không hiệu chỉnh"
-lại là lựa chọn đúng.
+Cổng kiểm chứng không đổi trạng thái sau nhánh, nhưng lần này bằng chứng nghiêng ngược lại và phải
+ghi ra: chấm 31 ván nhánh bằng mô hình trơn và bằng hiệu chỉnh fit từ vòng bảng cho **cùng một con
+số** (0,6416) — vì hiệu chỉnh đang bằng 1/1/0, tức không làm gì cả. Còn nếu áp bản fit **thô** chưa
+qua cổng thì log-loss lại **tốt hơn**: 0,6329. Ba lần trước bản thô luôn tệ hơn; lần này nó hơn
+0,009. Điều đó không mở cổng, và cố tình không: cổng chấm trên nửa sau vòng bảng chứ không chấm trên
+nhánh, đúng để một chênh lệch 0,009 trên 31 ván không được quyền quyết định. Nhưng đây là lần đầu
+tiên có dữ liệu đi ngược, nên nếu chung kết tổng cũng đi cùng chiều thì chỗ này đáng mở ra xem lại
+chứ không đáng lờ đi.
+
+### Còn lại hai series
+
+`tools/bracket_sim.py` duyệt **toàn bộ** cây còn lại thay vì mô phỏng, nên các con số dưới đây là
+giá trị chính xác của mô hình chứ không có nhiễu Monte Carlo. Sau ngày 22/8 cây chỉ còn ba đội:
+
+| Series | Cặp đấu | Ván | Series |
+|---|---|---|---|
+| Chung kết nhánh dưới (Bo3) | Team Yandex – Team Spirit | 50,1% | **50,1%** |
+| Chung kết tổng (Bo5) | TEAM VISION – Team Yandex | 56,2% | **61,5%** |
+| Chung kết tổng (Bo5) | TEAM VISION – Team Spirit | 56,3% | **61,6%** |
+
+| Đội | Vô địch | Vào chung kết tổng |
+|---|---|---|
+| **TEAM VISION** | **61,6%** | 100% |
+| Team Yandex | 19,3% | 50,1% |
+| Team Spirit | 19,1% | 49,9% |
+
+Chung kết nhánh dưới là 50,1% – 49,9%, tức mô hình gần như không tách nổi Yandex và Spirit; và vì
+hai đội đó gần bằng nhau nên lợi thế của TEAM VISION ở chung kết tổng cũng gần như không đổi dù ai
+lên. Cả ba đội đã chắc top 3.
 
 ### 4.6 Giới hạn cần biết
 
@@ -484,10 +538,14 @@ lại là lựa chọn đúng.
   nên chạy lại `refresh core` + `refresh history` + `refresh drafts` rồi `evaluate --apply`: nếu
   hiệu ứng trở thành thật, cổng kiểm chứng sẽ tự bật nó lên.
 - **Hiệu chỉnh fit trên vòng bảng nhưng lúc dự đoán sẽ áp cho cả nhánh Main Event.** Nhánh loại
-  trực tiếp giữa 8 đội mạnh nhất không giống vòng bảng 16 đội — 26 ván nhánh đầu tiên cho thấy độ
-  chính xác cấp ván tụt từ 67,9% xuống 57,7% và tỉ lệ over 41′ nhảy từ 61,5% lên 69,2%. 26 ván vẫn
+  trực tiếp giữa 8 đội mạnh nhất không giống vòng bảng 16 đội: qua 31 ván nhánh, độ chính xác cấp
+  ván ngang nhau (67,7% so với 67,0%) nhưng tỉ lệ over 41′ nhảy từ 61,5% lên 71,0%. 31 ván vẫn
   là quá ít để fit một hiệu chỉnh riêng cho nhánh, nên chúng được giữ nguyên làm holdout; nếu về
   sau cổng kiểm chứng bật hiệu chỉnh vòng bảng lên thì đây là chỗ đầu tiên cần xem lại.
+- **OpenDota trễ vài giờ.** Ván cuối trong ngày thường chưa có mặt lúc chạy refresh — tối 22/8 series
+  BoomBoys – Spirit mới có 1 trong 2 ván. Kết quả series thì hawk.live đã biết nên bảng điểm vẫn
+  đúng, nhưng ván thiếu đó không vào được dataset và series đó không chấm được. Chạy lại vào hôm sau
+  là đủ.
 - **Đừng tin một hiệu ứng chỉ mới thấy trên vài chục ván.** Sau ngày 1–2, `hero_mult` fit ra 0,50
   với bootstrap 89% ủng hộ; ngày 3 đảo ngược và bootstrap về 2,7%. Mọi con số trong mục 4.3 nên đọc
   kèm câu này.

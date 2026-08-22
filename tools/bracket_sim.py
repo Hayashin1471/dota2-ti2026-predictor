@@ -25,17 +25,18 @@ from backend import db, model                                  # noqa: E402
 # --------------------------------------------------------------------------
 # Where the bracket stands.  Edit this, nothing else.
 # --------------------------------------------------------------------------
+# Three teams left.  The upper bracket final is decided, so the whole tree is
+# now two series: the lower bracket final, then the grand final against the
+# team already sitting in it.
 STATE = {
-    # lower-bracket quarterfinal still being played, and the score so far
-    "lb_quarterfinal": ("nigma-galaxy", "betboom-team", 1, 1),
-    "upper_bracket_final": ("team-vision", "team-yandex", 0, 0),
-    # already through to the lower-bracket semifinal, waiting for an opponent
-    "lb_semifinal_seed": "team-spirit",
+    # lower-bracket final and the score so far
+    "lower_bracket_final": ("team-yandex", "team-spirit", 0, 0),
+    # already through to the grand final, waiting for an opponent
+    "grand_final_seed": "team-vision",
 }
 
 LABEL = {"team-vision": "TEAM VISION", "team-yandex": "Team Yandex",
-         "team-spirit": "Team Spirit", "nigma-galaxy": "Nigma Galaxy",
-         "betboom-team": "BoomBoys"}
+         "team-spirit": "Team Spirit"}
 
 db.init()
 TEAMS = {r["slug"]: dict(r) for r in db.query("SELECT slug, name, team_id FROM ti_teams")}
@@ -61,72 +62,51 @@ def p_series(a: str, b: str, best_of: int = 3, wa: int = 0, wb: int = 0) -> floa
 
 def placings() -> dict[str, dict[str, float]]:
     """Enumerate every remaining path and add up where each team lands."""
-    qa, qb, qwa, qwb = STATE["lb_quarterfinal"]
-    ua, ub = STATE["upper_bracket_final"][:2]
-    seed = STATE["lb_semifinal_seed"]
+    la, lb, lwa, lwb = STATE["lower_bracket_final"]
+    seed = STATE["grand_final_seed"]
 
-    out = {s: {"champion": 0.0, "final": 0.0, "top3": 0.0, "top4": 0.0}
-           for s in LABEL}
+    out = {s: {"champion": 0.0, "final": 0.0, "top3": 0.0} for s in LABEL}
 
-    def land(p: float, first: str, second: str, third: str, fourth: str) -> None:
+    def land(p: float, first: str, second: str, third: str) -> None:
         out[first]["champion"] += p
         for s in (first, second):
             out[s]["final"] += p
         for s in (first, second, third):
             out[s]["top3"] += p
-        for s in (first, second, third, fourth):
-            out[s]["top4"] += p
 
-    for lbq_win, p1 in ((qa, p_series(qa, qb, 3, qwa, qwb)),
-                        (qb, p_series(qb, qa, 3, qwb, qwa))):
-        for ub_win, p2 in ((ua, p_series(ua, ub)), (ub, p_series(ub, ua))):
-            ub_lose = ub if ub_win == ua else ua
-            for sf_win, p3 in ((seed, p_series(seed, lbq_win)),
-                               (lbq_win, p_series(lbq_win, seed))):
-                sf_lose = lbq_win if sf_win == seed else seed
-                for lbf_win, p4 in ((ub_lose, p_series(ub_lose, sf_win)),
-                                    (sf_win, p_series(sf_win, ub_lose))):
-                    lbf_lose = sf_win if lbf_win == ub_lose else ub_lose
-                    for champ, p5 in ((ub_win, p_series(ub_win, lbf_win, 5)),
-                                      (lbf_win, p_series(lbf_win, ub_win, 5))):
-                        runner = lbf_win if champ == ub_win else ub_win
-                        land(p1 * p2 * p3 * p4 * p5, champ, runner,
-                             third=lbf_lose, fourth=sf_lose)
+    for lbf_win, p1 in ((la, p_series(la, lb, 3, lwa, lwb)),
+                        (lb, p_series(lb, la, 3, lwb, lwa))):
+        lbf_lose = lb if lbf_win == la else la
+        for champ, p2 in ((seed, p_series(seed, lbf_win, 5)),
+                          (lbf_win, p_series(lbf_win, seed, 5))):
+            runner = lbf_win if champ == seed else seed
+            land(p1 * p2, champ, runner, third=lbf_lose)
     return out
 
 
 def main() -> None:
-    qa, qb, qwa, qwb = STATE["lb_quarterfinal"]
-    ua, ub = STATE["upper_bracket_final"][:2]
-    print("=== the two series on the board ===")
-    for name, (a, b, wa, wb), bo in (
-            ("LB quarterfinal", (qa, qb, qwa, qwb), 3),
-            ("Upper bracket final", (ua, ub, 0, 0), 3)):
-        s = series(a, b, bo, wa, wb)
-        top = s["scorelines"][0]
-        print(f"{name:22s} {LABEL[a]} vs {LABEL[b]} at {wa}-{wb}: "
-              f"map {p_map(a, b):.3f}, series {s['p_series']['a']:.3f}, "
-              f"most likely {top['a']}-{top['b']} ({top['p']:.0%})")
+    la, lb, lwa, lwb = STATE["lower_bracket_final"]
+    seed = STATE["grand_final_seed"]
+
+    print("=== the series on the board ===")
+    s = series(la, lb, 3, lwa, lwb)
+    top = s["scorelines"][0]
+    print(f"{'Lower bracket final':22s} {LABEL[la]} vs {LABEL[lb]} at {lwa}-{lwb}: "
+          f"map {p_map(la, lb):.3f}, series {s['p_series']['a']:.3f}, "
+          f"most likely {top['a']}-{top['b']} ({top['p']:.0%})")
 
     print("\n=== every pairing still reachable ===")
-    for a, b, bo in (("team-spirit", "nigma-galaxy", 3),
-                     ("team-spirit", "betboom-team", 3),
-                     ("team-vision", "team-spirit", 3),
-                     ("team-yandex", "team-spirit", 3),
-                     ("team-vision", "nigma-galaxy", 3),
-                     ("team-yandex", "nigma-galaxy", 3),
-                     ("team-vision", "betboom-team", 3),
-                     ("team-yandex", "betboom-team", 3),
-                     ("team-vision", "team-yandex", 5)):
+    for a, b, bo in ((la, lb, 3), (seed, la, 5), (seed, lb, 5)):
+        srs = series(a, b, bo)
+        line = ", ".join(f"{sl['a']}-{sl['b']} {sl['p']:.0%}" for sl in srs["scorelines"][:3])
         print(f"Bo{bo}  {LABEL[a]:14s} vs {LABEL[b]:14s} "
-              f"map {p_map(a, b):.3f}  series {p_series(a, b, bo):.3f}")
+              f"map {p_map(a, b):.3f}  series {p_series(a, b, bo):.3f}  [{line}]")
 
     print("\n=== where they finish ===")
     table = placings()
     for slug, v in sorted(table.items(), key=lambda kv: -kv[1]["champion"]):
         print(f"{LABEL[slug]:14s} champion {v['champion']:6.1%}  "
-              f"grand final {v['final']:6.1%}  top 3 {v['top3']:6.1%}  "
-              f"top 4 {v['top4']:6.1%}")
+              f"grand final {v['final']:6.1%}  top 3 {v['top3']:6.1%}")
     print("\ncheck: champion probabilities sum to",
           round(sum(v["champion"] for v in table.values()), 6))
 

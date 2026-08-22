@@ -413,18 +413,37 @@ def ti_slug(name: str | None) -> str | None:
     return team["slug"] if team else None
 
 
+def main_event_start() -> float | None:
+    """Local timestamp the Main Event opens at, per Liquipedia's bracket page."""
+    meta = db.get_meta("main_event") or {}
+    try:
+        day = time.strptime(str(meta.get("start_date") or ""), "%Y-%m-%d")
+    except ValueError:
+        return None
+    return time.mktime(day)
+
+
 def label_match_stages() -> dict:
-    """Mark each TI match as 'group' or 'playoff' using the GosuGamers bracket.
+    """Mark each TI match as 'group' or 'playoff'.
 
     Only the bracket knows this.  The match rows from OpenDota carry a league
     name and nothing else, and hawk.live files every TI series under one
     "Group Stage" tournament slug - 44 series covering all 109 games, knockout
     included - so it cannot be used to tell the phases apart.
 
-    A knockout series is resolved to matches by taking the *last* `score_a +
-    score_b` games between the two teams: the bracket is played after the group
-    phase, so the most recent games between a pair are the knockout ones even
-    when the same pair also met in a group round.
+    The Main Event has its own Liquipedia page carrying the date it opens, and
+    the group phase is over before that date, so it is a clean boundary: every
+    TI game from it onwards is a knockout game.  That is the rule used whenever
+    the wiki gives a date.
+
+    Without one, fall back to resolving each knockout series listed by
+    GosuGamers to matches, taking the *last* `score_a + score_b` games between
+    the two teams: the bracket is played after the group phase, so the most
+    recent games between a pair are the knockout ones even when the same pair
+    also met in a group round.  This fallback is only as complete as the
+    GosuGamers page, which keeps a **rolling window** - the first five bracket
+    games silently reverted to 'group' once their series scrolled off it, which
+    is the reason the date is preferred.
     """
     # The bracket spells teams the way GosuGamers does ("Boomboys" for BetBoom),
     # so go through the same resolver the rest of the app uses for team names.
@@ -441,6 +460,22 @@ def label_match_stages() -> dict:
 
     db.execute("UPDATE matches SET stage = 'group' WHERE league_name = ?",
                (config.TI_LEAGUE_NAME,))
+
+    def counts() -> dict:
+        return {r["stage"]: r["n"] for r in db.query(
+            "SELECT stage, COUNT(*) AS n FROM matches WHERE league_name = ? GROUP BY stage",
+            (config.TI_LEAGUE_NAME,))}
+
+    opens = main_event_start()
+    if opens is not None:
+        db.execute("UPDATE matches SET stage = 'playoff' "
+                   "WHERE league_name = ? AND start_time >= ?",
+                   (config.TI_LEAGUE_NAME, opens))
+        model.invalidate_cache()
+        return {"rule": "main-event-start",
+                "since": time.strftime("%Y-%m-%d", time.localtime(opens)),
+                "playoff": counts().get("playoff", 0), "counts": counts(),
+                "unresolved": []}
 
     def pair_matches(a: int, b: int, limit: int, after: float | None = None):
         sql = ("SELECT match_id FROM matches WHERE league_name = ? "
@@ -489,11 +524,9 @@ def label_match_stages() -> dict:
         for a, b in live:
             playoff += mark(pair_matches(a, b, 5, after=started["t"]))
 
-    counts = {r["stage"]: r["n"] for r in db.query(
-        "SELECT stage, COUNT(*) AS n FROM matches WHERE league_name = ? GROUP BY stage",
-        (config.TI_LEAGUE_NAME,))}
     model.invalidate_cache()
-    return {"playoff": playoff, "counts": counts, "unresolved": unresolved}
+    return {"rule": "gosugamers-series", "playoff": playoff,
+            "counts": counts(), "unresolved": unresolved}
 
 
 def resolve_player(slug: str, name: str) -> dict | None:
